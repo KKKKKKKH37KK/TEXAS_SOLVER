@@ -5,6 +5,7 @@ pub mod eval;
 pub mod export;
 pub mod game;
 pub mod holdem;
+pub mod preflop;
 pub mod query;
 pub mod range;
 pub mod solver;
