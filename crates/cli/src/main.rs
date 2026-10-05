@@ -5,6 +5,9 @@ use hexas_core::eval::{Category, evaluate};
 use hexas_core::export;
 use hexas_core::game::{Game, Node};
 use hexas_core::holdem::{Rake, Spot, TreeConfig, build, estimate, hand_labels};
+use hexas_core::preflop::classes::{NUM_CLASSES, combo_count};
+use hexas_core::preflop::equity;
+use hexas_core::preflop::game::{POSITIONS, PreflopConfig, PreflopGame, PreflopSolver};
 use hexas_core::range::Range;
 use hexas_core::solver::{DcfrParams, Solver};
 use hexas_core::spec::SpotSpec;
@@ -19,6 +22,8 @@ usage:
   hexas cards <cards>            card indices, e.g. hexas cards AsKd7c
   hexas eval <5-7 cards>         best five-card hand, e.g. hexas eval AsKsQsJsTs2d3c
   hexas tree [options]           tree size and memory estimate, without solving
+  hexas preflop [--iters N] [--stack BB]   solve the 6-max preflop tree, print opening ranges
+  hexas gen-equity <file> [samples]        regenerate the 169x169 all-in equity table
   hexas solve [options]          solve a heads-up spot, print the first decision's strategy
   hexas --version | --help
 
@@ -154,6 +159,8 @@ fn main() -> ExitCode {
         Some("eval") if args.len() == 2 => cmd_eval(&args[1]),
         Some("tree") => parse_args(&args[1..]).and_then(|a| cmd_tree(&a)),
         Some("solve") => parse_args(&args[1..]).and_then(|a| cmd_solve(&a)),
+        Some("gen-equity") => cmd_gen_equity(&args[1..]),
+        Some("preflop") => cmd_preflop(&args[1..]),
         _ => Err("unknown command (see --help)".into()),
     };
     match result {
@@ -385,4 +392,77 @@ fn print_root(game: &Game, solver: &Solver) {
         }
         println!();
     }
+}
+
+fn cmd_gen_equity(args: &[String]) -> Result<(), String> {
+    let path = args
+        .first()
+        .ok_or("usage: hexas gen-equity <file> [samples]")?;
+    let samples: usize = match args.get(1) {
+        Some(s) => s.parse().map_err(|_| format!("bad sample count {s}"))?,
+        None => 50_000,
+    };
+    let t0 = Instant::now();
+    let eq = equity::generate(samples, 0x4845_5841_5321);
+    std::fs::write(path, equity::to_bytes(&eq)).map_err(|e| format!("cannot write {path}: {e}"))?;
+    println!(
+        "wrote {path}: 169x169 equities, {samples} deals per pair, {:.1}s",
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn cmd_preflop(args: &[String]) -> Result<(), String> {
+    let mut config = PreflopConfig::default();
+    let mut iters = 2000u32;
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let v = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
+        let num = |v: &str| {
+            v.parse::<f64>()
+                .map_err(|_| format!("{flag}: not a number: {v}"))
+        };
+        match flag.as_str() {
+            "--iters" => iters = num(v)? as u32,
+            "--stack" => config.stack = num(v)?,
+            "--rake-pct" => config.rake_pct = num(v)? / 100.0,
+            "--rake-cap" => config.rake_cap = num(v)?,
+            _ => return Err(format!("unknown option {flag}")),
+        }
+    }
+    let game = PreflopGame::new(config);
+    println!("preflop tree: {} nodes", game.nodes.len());
+    let mut solver = PreflopSolver::new(game);
+    let t0 = Instant::now();
+    while solver.iterations() < iters {
+        solver.iterate();
+        let n = solver.iterations();
+        if n.is_multiple_of(iters.div_ceil(10)) || n == iters {
+            let r = solver.report();
+            let worst = r.br_gain_bb100.iter().cloned().fold(0.0, f64::max);
+            println!(
+                "iter {n:5}  max best-response gain {worst:.4} bb/100  ({:.1}s)",
+                t0.elapsed().as_secs_f64()
+            );
+        }
+    }
+    let r = solver.report();
+    println!("\nEV per hand (bb):");
+    for (p, ev) in r.ev.iter().enumerate() {
+        println!("  {:<4} {ev:+.3}", POSITIONS[p]);
+    }
+    // Opening (RFI) frequency per position: walk fold-fold-... to each player's first decision.
+    println!("\nRFI (open raise) frequency:");
+    let mut path = Vec::new();
+    for p in 0..5 {
+        let (node, _) = solver.walk(&path)?;
+        let s = solver.strategy(node);
+        let open: f64 = (0..NUM_CLASSES)
+            .map(|h| s[NUM_CLASSES + h] as f64 * combo_count(h) as f64)
+            .sum::<f64>()
+            / 1326.0;
+        println!("  {:<4} {:5.1}%", POSITIONS[p], open * 100.0);
+        path.push(0); // fold
+    }
+    Ok(())
 }
