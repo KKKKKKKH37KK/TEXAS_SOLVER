@@ -3,7 +3,7 @@
 use hexas_core::cards::parse_cards;
 use hexas_core::eval::{Category, evaluate};
 use hexas_core::game::{Game, Node};
-use hexas_core::holdem::{BetSizes, Rake, Spot, TreeConfig, build, estimate, hand_labels};
+use hexas_core::holdem::{Rake, Spot, TreeConfig, build, estimate, hand_labels};
 use hexas_core::range::Range;
 use hexas_core::solver::{DcfrParams, Solver};
 use std::collections::BTreeMap;
@@ -26,17 +26,23 @@ options (defaults in brackets):
   --ip <range>          IP range (required)
   --pot <bb>            starting pot [20]
   --stack <bb>          effective stack behind [90]
-  --bets <list>         bet sizes in % of pot on every street [33,66,100,125]
-  --turn-bets <list>    override turn sizes
-  --river-bets <list>   override river sizes
-  --raise-mult <x>      raise to x times the bet faced [3]
-  --max-raises <n>      raises allowed per street [3]
-  --no-donk             OOP may not bet first on the flop
   --rake-pct <pct>      rake in % of the pot [5]
   --rake-cap <bb>       rake cap [3]
   --budget-mb <mb>      refuse to solve above this estimate [3000]
   --iters <n>           maximum iterations [1000]
-  --target <pct>        stop below this exploitability, % of pot [0.3]";
+  --target <pct>        stop below this exploitability, % of pot [0.3]
+
+tree presets (PRD 3.3), changed by the options below:
+  flop spot:        flop 33,66,100,125 no donk | turn, river 66,125 | 1 raise per street
+  turn/river spot:  33,66,100,125 on every street | donk allowed | 3 raises per street
+  raises are 3x the bet faced, plus all-in
+
+  --bets <list>         bet sizes in % of pot on every street, e.g. 33,66
+  --turn-bets <list>    turn sizes
+  --river-bets <list>   river sizes
+  --raise-mult <x>      raise to x times the bet faced
+  --max-raises <n>      raises allowed per street
+  --donk | --no-donk    whether OOP may bet first on the flop";
 
 struct SpotArgs {
     board: String,
@@ -44,12 +50,13 @@ struct SpotArgs {
     ip: String,
     pot: f64,
     stack: f64,
-    bets: String,
+    /// Overrides on top of the preset.
+    bets: Option<String>,
     turn_bets: Option<String>,
     river_bets: Option<String>,
-    raise_mult: f64,
-    max_raises: usize,
-    donk: bool,
+    raise_mult: Option<f64>,
+    max_raises: Option<usize>,
+    donk: Option<bool>,
     rake_pct: f64,
     rake_cap: f64,
     budget_mb: f64,
@@ -64,12 +71,12 @@ fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
         ip: String::new(),
         pot: 20.0,
         stack: 90.0,
-        bets: "33,66,100,125".into(),
+        bets: None,
         turn_bets: None,
         river_bets: None,
-        raise_mult: 3.0,
-        max_raises: 3,
-        donk: true,
+        raise_mult: None,
+        max_raises: None,
+        donk: None,
         rake_pct: 5.0,
         rake_cap: 3.0,
         budget_mb: 3000.0,
@@ -78,8 +85,8 @@ fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
     };
     let mut it = args.iter();
     while let Some(flag) = it.next() {
-        if flag == "--no-donk" {
-            a.donk = false;
+        if flag == "--donk" || flag == "--no-donk" {
+            a.donk = Some(flag == "--donk");
             continue;
         }
         let v = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
@@ -93,11 +100,11 @@ fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
             "--ip" => a.ip = v.clone(),
             "--pot" => a.pot = num(v)?,
             "--stack" => a.stack = num(v)?,
-            "--bets" => a.bets = v.clone(),
+            "--bets" => a.bets = Some(v.clone()),
             "--turn-bets" => a.turn_bets = Some(v.clone()),
             "--river-bets" => a.river_bets = Some(v.clone()),
-            "--raise-mult" => a.raise_mult = num(v)?,
-            "--max-raises" => a.max_raises = num(v)? as usize,
+            "--raise-mult" => a.raise_mult = Some(num(v)?),
+            "--max-raises" => a.max_raises = Some(num(v)? as usize),
             "--rake-pct" => a.rake_pct = num(v)?,
             "--rake-cap" => a.rake_cap = num(v)?,
             "--budget-mb" => a.budget_mb = num(v)?,
@@ -160,40 +167,48 @@ fn cmd_eval(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn sizes(list: &str, a: &SpotArgs) -> Result<BetSizes, String> {
-    let bets = list
-        .split(',')
+/// "33,66" → [0.33, 0.66].
+fn bet_list(list: &str) -> Result<Vec<f64>, String> {
+    list.split(',')
         .map(|x| {
             x.trim()
                 .parse::<f64>()
                 .map(|p| p / 100.0)
                 .map_err(|_| format!("bad bet size {x:?}"))
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(BetSizes {
-        bets,
-        raise_mult: a.raise_mult,
-        max_raises: a.max_raises,
-        bet_allin: false,
-    })
+        .collect()
 }
 
+/// The preset for the board length (PRD §3.3), with any size options applied on top.
 fn spot_of(a: &SpotArgs) -> Result<Spot, String> {
-    let mut config = TreeConfig::new(a.pot, a.stack).with_sizes(sizes(&a.bets, a)?);
-    if let Some(t) = &a.turn_bets {
-        config.sizes[1] = sizes(t, a)?;
+    let board = parse_cards(&a.board).map_err(|e| e.to_string())?;
+    let mut config = TreeConfig::preset(a.pot, a.stack, board.len());
+    for (street, list) in [(0, &a.bets), (1, &a.bets), (2, &a.bets)]
+        .into_iter()
+        .chain([(1, &a.turn_bets), (2, &a.river_bets)])
+    {
+        if let Some(l) = list {
+            config.sizes[street].bets = bet_list(l)?;
+        }
     }
-    if let Some(r) = &a.river_bets {
-        config.sizes[2] = sizes(r, a)?;
+    for s in &mut config.sizes {
+        if let Some(m) = a.raise_mult {
+            s.raise_mult = m;
+        }
+        if let Some(n) = a.max_raises {
+            s.max_raises = n;
+        }
     }
-    config.oop_flop_bets = a.donk;
+    if let Some(d) = a.donk {
+        config.oop_flop_bets = d;
+    }
     config.rake = Rake {
         pct: a.rake_pct / 100.0,
         cap: a.rake_cap,
     };
     let parse = |s: &str| s.parse::<Range>().map_err(|e| e.to_string());
     Ok(Spot {
-        board: parse_cards(&a.board).map_err(|e| e.to_string())?,
+        board,
         ranges: [parse(&a.oop)?, parse(&a.ip)?],
         config,
     })

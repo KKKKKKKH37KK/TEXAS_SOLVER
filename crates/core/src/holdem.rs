@@ -84,6 +84,32 @@ impl TreeConfig {
         }
     }
 
+    /// Default tree for a spot starting on the flop (PRD §3.3 / §5.1): flop 33/66/100/125 without a
+    /// donk bet, turn and river 66/125, one raise per street.
+    pub fn flop_default(start_pot: f64, eff_stack: f64) -> Self {
+        let flop = BetSizes {
+            max_raises: 1,
+            ..BetSizes::default()
+        };
+        let later = BetSizes {
+            bets: vec![0.66, 1.25],
+            ..flop.clone()
+        };
+        let mut c = TreeConfig::new(start_pot, eff_stack);
+        c.sizes = [flop, later.clone(), later];
+        c.oop_flop_bets = false;
+        c
+    }
+
+    /// The default for a board of `board_len` cards: `flop_default` on the flop, `new` otherwise.
+    pub fn preset(start_pot: f64, eff_stack: f64, board_len: usize) -> Self {
+        if board_len == 3 {
+            Self::flop_default(start_pot, eff_stack)
+        } else {
+            Self::new(start_pot, eff_stack)
+        }
+    }
+
     /// Same sizes on every street.
     pub fn with_sizes(mut self, sizes: BetSizes) -> Self {
         self.sizes = [sizes.clone(), sizes.clone(), sizes];

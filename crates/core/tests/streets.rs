@@ -166,6 +166,30 @@ fn flop_spot_with_allin_runouts_converges() {
 }
 
 #[test]
+fn flop_preset_follows_prd() {
+    let cfg = TreeConfig::preset(5.5, 97.5, 3);
+    let g = build(&spot("Ks7d2c", "AA", "KK", cfg)).unwrap();
+    let labels = |n: usize| match &g.nodes[n] {
+        Node::Action { actions, .. } => actions.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+        _ => panic!(),
+    };
+    assert_eq!(labels(0), ["Check"]); // no donk
+    assert_eq!(
+        labels(g.find(&["Check"]).unwrap()),
+        ["Check", "Bet 1.82", "Bet 3.63", "Bet 5.50", "Bet 6.88"]
+    );
+    // One raise per street: facing the raise there is no re-raise or all-in.
+    let n = g.find(&["Check", "Bet 5.50", "Raise 16.50"]).unwrap();
+    assert_eq!(labels(n), ["Fold", "Call"]);
+    // Turn after check-check: 66 % and 125 %, and OOP may lead.
+    let Node::Chance { children, .. } = &g.nodes[g.find(&["Check", "Check"]).unwrap()] else {
+        panic!()
+    };
+    assert_eq!(labels(children[0]), ["Check", "Bet 3.63", "Bet 6.88"]);
+    assert_eq!(TreeConfig::preset(5.5, 97.5, 4).sizes[0].bets.len(), 4);
+}
+
+#[test]
 fn flop_donk_switch() {
     let mut cfg = TreeConfig::new(10.0, 50.0);
     let root_actions = |cfg: &TreeConfig| {
