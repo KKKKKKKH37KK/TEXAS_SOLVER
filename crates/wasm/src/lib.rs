@@ -18,10 +18,11 @@
 //! - `preflopCreate {config}` / `preflopStep {n}` / `preflopReport` / `preflopView {path}` → the
 //!   6-max preflop solver (a third, independent session); `path` is a list of action indices
 
-use hexas_core::cards::Card;
+use hexas_core::cards::{Card, parse_cards};
 use hexas_core::export::Imported;
 use hexas_core::game::{Action, Game};
 use hexas_core::holdem::{build, estimate};
+use hexas_core::library;
 use hexas_core::preflop::classes::{NUM_CLASSES, class_name};
 use hexas_core::preflop::game::{PNode, POSITIONS, PreflopConfig, PreflopGame, PreflopSolver};
 use hexas_core::query::{Kind, Step, Strategies, View, hand_ev, to_real, walk};
@@ -60,6 +61,14 @@ enum Request {
     PreflopReport,
     PreflopView {
         path: Vec<usize>,
+    },
+    /// Library flop for a real flop: canonical name and real → canonical suit map.
+    CanonicalFlop {
+        board: String,
+    },
+    /// Suit map for the imported file (set after loading a library flop; `load` resets it).
+    ImportMap {
+        map: SuitMap,
     },
 }
 
@@ -112,6 +121,8 @@ impl Drop for Session {
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
     static IMPORT: RefCell<Option<Imported>> = const { RefCell::new(None) };
+    /// Real suit → suit of the imported tree (a library flop is stored in canonical suits).
+    static IMPORT_MAP: RefCell<SuitMap> = const { RefCell::new(IDENTITY) };
     static PREFLOP: RefCell<Option<PreflopSolver>> = const { RefCell::new(None) };
     static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
@@ -134,6 +145,32 @@ fn action_json(a: &Action) -> Value {
     json!({ "kind": kind, "amount": amount, "label": a.to_string() })
 }
 
+/// A suit permutation, `map[s]` = image of suit s.
+type SuitMap = [u8; 4];
+const IDENTITY: SuitMap = [0, 1, 2, 3];
+
+fn map_card(map: &SuitMap, c: u8) -> u8 {
+    c - c % 4 + map[(c % 4) as usize]
+}
+
+fn map_mask(map: &SuitMap, mut m: u64) -> u64 {
+    let mut out = 0;
+    while m != 0 {
+        let c = m.trailing_zeros() as u8;
+        m &= m - 1;
+        out |= 1 << map_card(map, c);
+    }
+    out
+}
+
+fn inverse(map: &SuitMap) -> SuitMap {
+    let mut inv = [0u8; 4];
+    for (s, &t) in map.iter().enumerate() {
+        inv[t as usize] = s as u8;
+    }
+    inv
+}
+
 fn cards_of(m: u64) -> Vec<String> {
     (0..52u8)
         .filter(|&c| m >> c & 1 == 1)
@@ -141,21 +178,23 @@ fn cards_of(m: u64) -> Vec<String> {
         .collect()
 }
 
-fn to_steps(path: &[StepIn]) -> Result<Vec<Step>, String> {
+/// Path steps; dealt cards are mapped through `map` (real suits → the tree's suits).
+fn to_steps(path: &[StepIn], map: &SuitMap) -> Result<Vec<Step>, String> {
     path.iter()
         .map(|s| match (s.a, &s.c) {
             (Some(a), None) => Ok(Step::Action(a)),
             (None, Some(c)) => c
                 .parse::<Card>()
-                .map(|c| Step::Card(c.index()))
+                .map(|c| Step::Card(map_card(map, c.index())))
                 .map_err(|e| e.to_string()),
             _ => Err(format!("bad path step {s:?}")),
         })
         .collect()
 }
 
-/// `ev`: per-hand EVs for both players, when available.
-fn view_json(game: &Game, v: &View, ev: Option<[Vec<f64>; 2]>) -> Value {
+/// `ev`: per-hand EVs for both players, when available. `show` maps the tree's suits to the
+/// suits shown (identity, or back to the real flop for a library file).
+fn view_json(game: &Game, v: &View, ev: Option<[Vec<f64>; 2]>, show: &SuitMap) -> Value {
     let (kind, player, actions) = match &v.kind {
         Kind::Action { player, actions } => (
             "action",
@@ -169,11 +208,12 @@ fn view_json(game: &Game, v: &View, ev: Option<[Vec<f64>; 2]>) -> Value {
     let hands = [0, 1].map(|p| {
         game.hands[p]
             .iter()
-            .map(|&m| hand_name(m))
+            .map(|&m| hand_name(map_mask(show, m)))
             .collect::<Vec<_>>()
     });
+    let board = map_mask(show, v.board);
     let dealable = if kind == "chance" {
-        cards_of(!v.board & ((1u64 << 52) - 1))
+        cards_of(!board & ((1u64 << 52) - 1))
     } else {
         vec![]
     };
@@ -181,7 +221,7 @@ fn view_json(game: &Game, v: &View, ev: Option<[Vec<f64>; 2]>) -> Value {
         "kind": kind,
         "player": player,
         "actions": actions,
-        "board": cards_of(v.board),
+        "board": cards_of(board),
         "pot": v.pot,
         "stacks": v.stacks,
         "street": v.street,
@@ -237,8 +277,9 @@ pub fn handle(req: &str) -> Result<Value, String> {
             }))
         }),
         Request::View { path, ev, source } => {
-            let steps = to_steps(&path)?;
             if source.as_deref() == Some("import") {
+                let map = IMPORT_MAP.with(|m| *m.borrow());
+                let steps = to_steps(&path, &map)?;
                 IMPORT.with(|i| {
                     let i = i.borrow();
                     let imp = i.as_ref().ok_or("no result file loaded")?;
@@ -250,16 +291,36 @@ pub fn handle(req: &str) -> Result<Value, String> {
                             to_real(&imp.game, &v, p, &x)
                         })
                     });
-                    Ok(view_json(imp.game(), &v, ev))
+                    Ok(view_json(imp.game(), &v, ev, &inverse(&map)))
                 })
             } else {
+                let steps = to_steps(&path, &IDENTITY)?;
                 with_session(|s| {
                     let v = walk(&*s.solver, &steps)?;
                     let ev = (ev.unwrap_or(false) && v.kind != Kind::Chance)
                         .then(|| [0, 1].map(|p| hand_ev(&s.solver, &v, p)));
-                    Ok(view_json(s.solver.game(), &v, ev))
+                    Ok(view_json(s.solver.game(), &v, ev, &IDENTITY))
                 })
             }
+        }
+        Request::CanonicalFlop { board } => {
+            let c = parse_cards(&board).map_err(|e| e.to_string())?;
+            if c.len() != 3 {
+                return Err("a flop has three cards".into());
+            }
+            let (canon, map) = library::canonical_flop([c[0], c[1], c[2]]);
+            Ok(json!({ "name": library::flop_name(&canon), "map": map }))
+        }
+        Request::ImportMap { map } => {
+            let mut seen = [false; 4];
+            if !map
+                .iter()
+                .all(|&s| s < 4 && !std::mem::replace(&mut seen[s as usize], true))
+            {
+                return Err("map must be a permutation of 0..4".into());
+            }
+            IMPORT_MAP.with(|m| *m.borrow_mut() = map);
+            Ok(json!({}))
         }
         Request::Destroy => {
             SESSION.with(|s| s.borrow_mut().take());
@@ -337,6 +398,7 @@ fn with_preflop(
 /// Loads a result file into the import session and returns its header.
 pub fn load(bytes: &[u8]) -> Result<Value, String> {
     IMPORT.with(|i| i.borrow_mut().take());
+    IMPORT_MAP.with(|m| *m.borrow_mut() = IDENTITY);
     let imp = Imported::new(bytes)?;
     let header = serde_json::to_value(&imp.loaded.header).map_err(|e| e.to_string())?;
     let stored = imp.loaded.strategies.len();

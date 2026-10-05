@@ -59,6 +59,68 @@ fn preflop_session() {
 }
 
 #[test]
+fn library_flop_is_shown_in_real_suits() {
+    use hexas_core::export::write;
+    use hexas_core::holdem::build;
+    use hexas_core::solver::{DcfrParams, Solver};
+    use hexas_core::spec::SpotSpec;
+
+    // The real flop KhTh4c maps to a canonical flop; build a file for the canonical one.
+    let c = call(r#"{"cmd":"canonicalFlop","board":"KhTh4c"}"#);
+    let name = c["name"].as_str().unwrap().to_string();
+    let spec = SpotSpec {
+        board: name.clone(),
+        oop: "AA,KK,AKs".into(),
+        ip: "QQ,JJ,AQs".into(),
+        pot: 10.0,
+        stack: 20.0,
+        ..Default::default()
+    };
+    let game = build(&spec.to_spot().unwrap()).unwrap();
+    let mut s = Solver::new(&game, DcfrParams::default());
+    for _ in 0..5 {
+        s.iterate();
+    }
+    let bytes = write(
+        &s,
+        &SpotSpec::describe(&spec.to_spot().unwrap(), &spec.oop, &spec.ip),
+        3,
+    );
+    hexas_wasm::load(&bytes).unwrap();
+    call(&format!(r#"{{"cmd":"importMap","map":{}}}"#, c["map"]));
+
+    let root = call(r#"{"cmd":"view","path":[],"source":"import"}"#);
+    let mut board: Vec<String> = root["board"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    board.sort();
+    assert_eq!(board, ["4c", "Kh", "Th"]);
+    // AKs in the real suits: hearts are suited with the flop.
+    let hands: Vec<&str> = root["hands"][0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap())
+        .collect();
+    // AKs in real suits: Kh is on the board, so exactly the other three remain.
+    let aks: Vec<&&str> = hands
+        .iter()
+        .filter(|h| {
+            h.starts_with('A') && h.as_bytes()[2] == b'K' && h.as_bytes()[1] == h.as_bytes()[3]
+        })
+        .collect();
+    assert_eq!(aks.len(), 3, "{aks:?}");
+    assert!(hands.contains(&"AsKs") && hands.contains(&"AdKd") && hands.contains(&"AcKc"));
+    assert!(
+        !hands.iter().any(|h| h.contains("Kh")),
+        "Kh is on the board"
+    );
+}
+
+#[test]
 fn errors_are_reported() {
     assert!(handle("not json").is_err());
     assert!(
