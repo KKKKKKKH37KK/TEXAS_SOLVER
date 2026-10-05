@@ -34,6 +34,12 @@ impl Store {
         unsafe { std::slice::from_raw_parts(self.0[off..].as_ptr() as *const f32, len) }
     }
 
+    fn zero(&mut self) {
+        for x in self.0.iter_mut() {
+            *x.get_mut() = 0.0;
+        }
+    }
+
     #[allow(clippy::mut_from_ref)]
     fn get_mut(&self, off: usize, len: usize) -> &mut [f32] {
         assert!(off + len <= self.0.len());
@@ -47,6 +53,9 @@ pub struct DcfrParams {
     pub alpha: f64,
     pub beta: f64,
     pub gamma: f64,
+    /// Zero the cumulative (average) strategy when the iteration count is a power of 4, so early
+    /// noisy strategies drop out of the average (as postflop-solver does).
+    pub reset_average: bool,
 }
 
 impl Default for DcfrParams {
@@ -56,6 +65,7 @@ impl Default for DcfrParams {
             alpha: 1.5,
             beta: 0.0,
             gamma: 2.0,
+            reset_average: false,
         }
     }
 }
@@ -241,6 +251,11 @@ impl<'g> Solver<'g> {
             neg: (tb / (tb + 1.0)) as f32,
             strat: (t / (t + 1.0)).powf(p.gamma) as f32,
         };
+        let n = self.iteration;
+        if p.reset_average && n >= 4 && n.is_power_of_two() && n.trailing_zeros().is_multiple_of(2)
+        {
+            self.cum_strategy.zero();
+        }
         for trav in 0..2 {
             let reach_t = self.game.weights[trav].clone();
             let reach_o = self.game.weights[1 - trav].clone();
