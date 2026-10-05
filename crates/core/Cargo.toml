@@ -5,3 +5,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# Parallel chance nodes. In the browser (M3) this runs on wasm-bindgen-rayon.
+rayon = "1"

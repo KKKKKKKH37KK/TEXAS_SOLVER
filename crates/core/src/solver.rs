@@ -6,6 +6,41 @@
 
 use crate::game::{Game, Node};
 use crate::terminal::Terminals;
+use rayon::prelude::*;
+use std::cell::UnsafeCell;
+
+/// Regret / strategy storage written from several threads during one traversal.
+///
+/// Soundness: a traversal visits every action node exactly once, and the subtrees below different
+/// children of a chance node (the only place work is split across threads) share no nodes, so no two
+/// threads ever touch the same slice at the same time. Reads for reporting happen only between
+/// iterations (`&self` methods while no `iterate` is running, enforced by `iterate(&mut self)`).
+struct Store(Box<[UnsafeCell<f32>]>);
+
+unsafe impl Sync for Store {}
+
+impl Store {
+    fn new(len: usize) -> Self {
+        Store((0..len).map(|_| UnsafeCell::new(0.0)).collect())
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, off: usize, len: usize) -> &[f32] {
+        assert!(off + len <= self.0.len());
+        // SAFETY: UnsafeCell<f32> has the layout of f32; see the type-level comment for aliasing.
+        unsafe { std::slice::from_raw_parts(self.0[off..].as_ptr() as *const f32, len) }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    fn get_mut(&self, off: usize, len: usize) -> &mut [f32] {
+        assert!(off + len <= self.0.len());
+        // SAFETY: as in `get`; each node's slice is written by one thread at a time.
+        unsafe { std::slice::from_raw_parts_mut(self.0[off].get(), len) }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct DcfrParams {
@@ -51,8 +86,8 @@ pub struct Solver<'g> {
     params: DcfrParams,
     /// Offset of each action node's storage (unused for other nodes).
     offset: Vec<usize>,
-    regrets: Vec<f32>,
-    cum_strategy: Vec<f32>,
+    regrets: Store,
+    cum_strategy: Store,
     iteration: u32,
     /// Σ over compatible hand pairs of w0·w1: turns counterfactual sums into per-deal values.
     norm: f64,
@@ -105,6 +140,19 @@ fn without_card(reach: &[f32], hands: &[u64], card: u8) -> Vec<f32> {
         .collect()
 }
 
+/// Chance node value: Σ over cards of the child values × `factor`, skipping hands that hold the card.
+fn sum_chance(vals: &[Vec<f32>], cards: &[u8], hands: &[u64], factor: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; hands.len()];
+    for (v, &c) in vals.iter().zip(cards) {
+        for (h, x) in v.iter().enumerate() {
+            if hands[h] >> c & 1 == 0 {
+                out[h] += x * factor;
+            }
+        }
+    }
+    out
+}
+
 impl<'g> Solver<'g> {
     pub fn new(game: &'g Game, params: DcfrParams) -> Self {
         game.validate();
@@ -131,8 +179,8 @@ impl<'g> Solver<'g> {
             terms,
             params,
             offset,
-            regrets: vec![0.0; size],
-            cum_strategy: vec![0.0; size],
+            regrets: Store::new(size),
+            cum_strategy: Store::new(size),
             iteration: 0,
             norm,
         }
@@ -197,7 +245,7 @@ impl<'g> Solver<'g> {
     }
 
     fn cfr(
-        &mut self,
+        &self,
         node: usize,
         trav: usize,
         reach_t: &[f32],
@@ -214,18 +262,16 @@ impl<'g> Solver<'g> {
                 children,
                 factor,
             } => {
-                let mut out = vec![0.0f32; reach_t.len()];
-                for (&c, &child) in cards.iter().zip(children) {
-                    let rt = without_card(reach_t, &game.hands[trav], c);
-                    let ro = without_card(reach_o, &game.hands[1 - trav], c);
-                    let v = self.cfr(child, trav, &rt, &ro, d);
-                    for (h, x) in v.iter().enumerate() {
-                        if game.hands[trav][h] >> c & 1 == 0 {
-                            out[h] += x * factor;
-                        }
-                    }
-                }
-                out
+                let vals: Vec<Vec<f32>> = cards
+                    .par_iter()
+                    .zip(children)
+                    .map(|(&c, &child)| {
+                        let rt = without_card(reach_t, &game.hands[trav], c);
+                        let ro = without_card(reach_o, &game.hands[1 - trav], c);
+                        self.cfr(child, trav, &rt, &ro, d)
+                    })
+                    .collect();
+                sum_chance(&vals, cards, &game.hands[trav], *factor)
             }
             Node::Action {
                 player,
@@ -234,7 +280,7 @@ impl<'g> Solver<'g> {
             } => {
                 let (n_act, n_hand) = (actions.len(), game.num_hands(*player));
                 let off = self.offset[node];
-                let sigma = regret_match(&self.regrets[off..off + n_act * n_hand], n_act, n_hand);
+                let sigma = regret_match(self.regrets.get(off, n_act * n_hand), n_act, n_hand);
 
                 if *player == trav {
                     let mut value = vec![0.0f32; n_hand];
@@ -249,14 +295,15 @@ impl<'g> Solver<'g> {
                         }
                         child_vals.push(v);
                     }
+                    let regrets = self.regrets.get_mut(off, n_act * n_hand);
+                    let cum = self.cum_strategy.get_mut(off, n_act * n_hand);
                     for (a, v) in child_vals.iter().enumerate() {
                         for h in 0..n_hand {
-                            let i = off + a * n_hand + h;
-                            let r = self.regrets[i];
-                            self.regrets[i] =
+                            let i = a * n_hand + h;
+                            let r = regrets[i];
+                            regrets[i] =
                                 r * if r > 0.0 { d.pos } else { d.neg } + (v[h] - value[h]);
-                            self.cum_strategy[i] =
-                                self.cum_strategy[i] * d.strat + reach_t[h] * sigma[a * n_hand + h];
+                            cum[i] = cum[i] * d.strat + reach_t[h] * sigma[i];
                         }
                     }
                     value
@@ -287,7 +334,7 @@ impl<'g> Solver<'g> {
         };
         let (n_act, n_hand) = (actions.len(), self.game.num_hands(*player));
         let off = self.offset[node];
-        normalise(&self.cum_strategy[off..off + n_act * n_hand], n_act, n_hand)
+        normalise(self.cum_strategy.get(off, n_act * n_hand), n_act, n_hand)
     }
 
     /// Counterfactual values for player `p` with both players on the average strategy (or `p` best
@@ -301,17 +348,15 @@ impl<'g> Solver<'g> {
                 children,
                 factor,
             } => {
-                let mut out = vec![0.0f32; game.num_hands(p)];
-                for (&c, &child) in cards.iter().zip(children) {
-                    let ro = without_card(reach_o, &game.hands[1 - p], c);
-                    let v = self.values(child, p, &ro, mode);
-                    for (h, x) in v.iter().enumerate() {
-                        if game.hands[p][h] >> c & 1 == 0 {
-                            out[h] += x * factor;
-                        }
-                    }
-                }
-                out
+                let vals: Vec<Vec<f32>> = cards
+                    .par_iter()
+                    .zip(children)
+                    .map(|(&c, &child)| {
+                        let ro = without_card(reach_o, &game.hands[1 - p], c);
+                        self.values(child, p, &ro, mode)
+                    })
+                    .collect();
+                sum_chance(&vals, cards, &game.hands[p], *factor)
             }
             Node::Action {
                 player, children, ..
