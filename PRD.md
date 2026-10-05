@@ -6,7 +6,11 @@
 - **翻前**：解 6 人翻前樹。規則限制成「最多 2 人看翻牌」。
 - **翻後**：從翻前結果取得雙方範圍，指定翻牌後，用 DCFR 解出 HU 翻後的完整策略、EV 和 equity。
 
-核心用 Rust 寫，同時編譯成 WASM（給網頁）和 native CLI（給測試和 benchmark）。前端沿用 HH Stats Viewer 的技術棧：Vite、React、TypeScript。
+核心用 Rust 寫，同時編譯成 WASM（給網頁）和 native CLI。前端沿用 HH Stats Viewer 的技術棧：Vite、React、TypeScript。
+
+**混合架構（2026-10-06 決定，見 §5.1）**：
+- 轉牌和河牌 spot 在瀏覽器裡解。
+- 翻牌 spot 的樹太大，放不進瀏覽器的 4GB，所以用本機 native CLI 解，結果匯出成檔案，再到網頁上查看。
 
 ## 1. 目標 / 非目標
 **目標**
@@ -51,9 +55,15 @@
   - 這是已知偏差，UI 要明確告知使用者。v2 開放多人底池後移除這條規則。
 
 ### 3.3 翻後動作樹（HU）
-- **下注**：check、33%、66%、100%、125% pot，三條街相同。
-- **加注**：一種尺寸，加到 3× 對方的下注，另外加 all-in。每條街最多 3 次加注（可設定）。
-- **Donk**：三條街都允許 OOP 領先下注，包括翻牌圈的非翻前加注者，尺寸和一般下注相同。可以設定關閉翻牌 donk，用來縮小樹。
+- **轉牌、河牌 spot 的預設**：
+  - 下注：check、33%、66%、100%、125% pot，三條街相同。
+  - 加注：一種尺寸，加到 3× 對方的下注，另外加 all-in。每條街最多 3 次加注（可設定）。
+  - Donk：允許 OOP 領先下注，尺寸和一般下注相同。
+- **翻牌 spot 的預設**（2026-10-06 決定，見 §5.1）：
+  - 翻牌：check、33%、66%、100%、125%，翻牌不能 donk。
+  - 轉牌、河牌：check、66%、125%。
+  - 加注：3× 加 all-in，每條街最多 1 次。
+  - 所有設定都可以改，改了以後會重新估算記憶體。
 - **All-in 門檻**：下注後剩餘籌碼少於底池的 Y%（預設 10%）時，這個下注改成 all-in。如果多個尺寸換算後的金額相同，合併成一個。
 
 ## 4. 演算法
@@ -85,11 +95,26 @@
   2. 降低每條街的加注次數上限。
   3. 關閉翻牌 donk，或轉牌、河牌減少尺寸。這一項要先經過使用者同意。
 
+### 5.1 M2 實測與決定（2026-10-06）
+測試情境：BTN vs BB，100bb SRP（底池 5.5bb、有效籌碼 97.5bb），翻牌 Ks7d2c，雙方各約 530 組 combos。下表是用 `hexas tree` 估算的 f32 記憶體：
+
+| 設定 | 記憶體 |
+|---|---|
+| 原設定：三條街各 4 種尺寸、最多 3 次加注、翻牌 donk | 132 GB |
+| 原設定，但每條街最多 1 次加注 | 100 GB |
+| 翻牌 4 種尺寸 / 轉牌、河牌 66,125 / 最多 1 次加注 / 翻牌不 donk | 14.8 GB |
+| 每條街各 1 種尺寸 / 最多 1 次加注 | 4.1 GB |
+| 轉牌 spot，原設定 | 0.39 GB |
+
+決定：
+- **平台採混合架構**。轉牌、河牌在瀏覽器解；翻牌用 native CLI 解（使用者電腦 31GB RAM、16 執行緒），結果匯出成檔案，再到網頁查看。
+- **翻牌 spot 改用縮小後的預設**（見 §3.3）。開啟壓縮後約 7.4GB。
+
 ## 6. 架構
 ```
 hexas-solver/
   crates/core/     cards, evaluator, tree, dcfr, preflop, exploitability（純 Rust，無 IO）
-  crates/cli/      native 執行檔：solve / bench / compare（測試和效能量測用）
+  crates/cli/      native 執行檔：tree / solve / compare；翻牌 spot 在這裡解並匯出結果檔
   crates/wasm/     wasm-bindgen API：estimate(config), solve(config, onProgress), query(path)
   web/             Vite + React + TS；solver 在 Web Worker 裡執行
   data/            預算好的 169×169 equity 矩陣（約 114KB binary）
@@ -147,7 +172,7 @@ hexas-solver/
 | M0 | 安裝 Rust 和 wasm-pack（**需要使用者同意**）；建立 repo 骨架；CI | `cargo test` 和 `npm run build` 綠燈 |
 | M1 | cards、evaluator、河牌 DCFR、exploitability、CLI | §8.1、§8.2、§8.3 |
 | M2 | 轉牌和翻牌 chance node、isomorphism、記憶體估算、壓縮、rayon | §8.4、§8.5；實測 §3.3 尺寸的記憶體 |
-| M3 | WASM 加 Web Worker，做最小 UI：範圍輸入、翻牌、求解、看策略 | 瀏覽器結果和 native 一致 |
+| M3 | WASM 加 Web Worker，做最小 UI：範圍輸入、牌面、求解（轉牌、河牌）、看策略；匯入 native 解出的翻牌結果檔 | 瀏覽器結果和 native 一致；翻牌結果檔可以在網頁瀏覽 |
 | M4 | 6-max 翻前 solver 加範圍表 UI | §8.6 |
 | M5 | 翻前到翻後的流程、存檔、GitHub Pages 加 coi-serviceworker | 部署後可以多執行緒求解 |
 | M6 | 整合 Stats Viewer；用翻後結果校正 realization 係數 | 從重播一鍵開啟 spot |
