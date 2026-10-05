@@ -4,9 +4,9 @@
 //! both players enter with equal stacks (`eff_stack`). Between streets a chance node deals every card
 //! not on the board; hands that hold the card get zero reach in that branch (see `solver`).
 
-use crate::cards::{Card, hand_class, mask_of};
+use crate::cards::{Card, all_combos, combo_index, hand_class, mask_of};
 use crate::eval::evaluate;
-use crate::game::{Action, Game, Node};
+use crate::game::{Action, Game, Iso, Node};
 use crate::range::{Range, live_combos};
 use std::collections::HashMap;
 
@@ -62,6 +62,9 @@ pub struct TreeConfig {
     /// A bet that leaves less than this fraction of the resulting pot behind becomes all-in.
     pub allin_threshold: f64,
     pub rake: Rake,
+    /// Share subtrees between suit-isomorphic turn / river cards (PRD §4.1). Only applies when both
+    /// ranges are symmetric in the suits involved.
+    pub isomorphism: bool,
 }
 
 impl TreeConfig {
@@ -81,6 +84,7 @@ impl TreeConfig {
                 pct: 0.05,
                 cap: 3.0,
             },
+            isomorphism: true,
         }
     }
 
@@ -170,10 +174,60 @@ enum Next {
 
 const EPS: f64 = 1e-9;
 
+/// The six suit transpositions, indexed as in `Game::swaps`.
+const SUIT_PAIRS: [(u8, u8); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+
+fn swap_card(c: u8, (a, b): (u8, u8)) -> u8 {
+    let s = c % 4;
+    if s == a {
+        c - a + b
+    } else if s == b {
+        c - b + a
+    } else {
+        c
+    }
+}
+
+fn swap_mask(mut m: u64, pair: (u8, u8)) -> u64 {
+    let mut out = 0;
+    while m != 0 {
+        let c = m.trailing_zeros() as u8;
+        m &= m - 1;
+        out |= 1 << swap_card(c, pair);
+    }
+    out
+}
+
+/// Ranks of `suit` present in a board mask.
+fn suit_ranks(board: u64, suit: u8) -> u16 {
+    (0..13u8).fold(0, |acc, r| {
+        if board >> (r * 4 + suit) & 1 == 1 {
+            acc | 1 << r
+        } else {
+            acc
+        }
+    })
+}
+
+/// For each suit pair: are both ranges unchanged when the two suits are exchanged?
+fn range_symmetry(ranges: &[Range; 2]) -> [bool; 6] {
+    SUIT_PAIRS.map(|pair| {
+        all_combos().into_iter().enumerate().all(|(i, (a, b))| {
+            let j = combo_index(
+                Card::from_index(swap_card(a.index(), pair)),
+                Card::from_index(swap_card(b.index(), pair)),
+            );
+            ranges.iter().all(|r| r.weights[i] == r.weights[j])
+        })
+    })
+}
+
 /// Sizing rules shared by the tree builder and the size estimate.
 struct Rules<'a> {
     cfg: &'a TreeConfig,
     start_street: usize,
+    /// Suit pairs the ranges are symmetric in (all false when isomorphism is off).
+    sym: [bool; 6],
 }
 
 impl Rules<'_> {
@@ -336,21 +390,54 @@ impl Rules<'_> {
                 ..Default::default()
             };
         }
-        let cards = 52 - st.board_len() as u64;
-        // Any card gives the same subtree shape; use a placeholder card that is not on the board.
-        let card = (0..52u8).find(|&c| st.board >> c & 1 == 0).unwrap();
-        let s = st.next_street(card);
-        let child = if self.all_in(&s) {
-            self.count_close(&s)
-        } else {
-            self.count_action(&s)
-        };
         let mut t = TreeSize {
             chance_nodes: 1,
             ..Default::default()
         };
-        t.add(&child, cards);
+        // Betting is the same after every card, but the board (and so the isomorphism of the next
+        // chance node) is not, so only the last street can be multiplied out.
+        let (canon, _) = self.deal(st.board);
+        if st.board_len() == 4 {
+            let s = st.next_street(canon[0]);
+            let child = if self.all_in(&s) {
+                self.count_close(&s)
+            } else {
+                self.count_action(&s)
+            };
+            t.add(&child, canon.len() as u64);
+        } else {
+            for c in canon {
+                let s = st.next_street(c);
+                let child = if self.all_in(&s) {
+                    self.count_close(&s)
+                } else {
+                    self.count_action(&s)
+                };
+                t.add(&child, 1);
+            }
+        }
         t
+    }
+
+    /// Cards that can be dealt on `board`: those with their own subtree, and (card, canonical card,
+    /// suit pair) for cards that are a suit swap of a canonical one. Two suits are interchangeable
+    /// when both ranges are symmetric in them and the board holds the same ranks in each.
+    fn deal(&self, board: u64) -> (Vec<u8>, Vec<(u8, u8, u8)>) {
+        let mut canon = Vec::new();
+        let mut iso = Vec::new();
+        for c in (0..52u8).filter(|&c| board >> c & 1 == 0) {
+            let (r, s) = (c / 4, c % 4);
+            let twin = (0..s).find_map(|s2| {
+                let pair = SUIT_PAIRS.iter().position(|&p| p == (s2, s)).unwrap();
+                (self.sym[pair] && suit_ranks(board, s2) == suit_ranks(board, s))
+                    .then_some((r * 4 + s2, pair as u8))
+            });
+            match twin {
+                Some((cc, pair)) => iso.push((c, cc, pair)),
+                None => canon.push(c),
+            }
+        }
+        (canon, iso)
     }
 }
 
@@ -408,7 +495,7 @@ impl Builder<'_> {
             });
         }
         let id = self.placeholder();
-        let cards: Vec<u8> = (0..52u8).filter(|&c| st.board >> c & 1 == 0).collect();
+        let (cards, twins) = self.rules.deal(st.board);
         let mut children = Vec::with_capacity(cards.len());
         for &c in &cards {
             let s = st.next_street(c);
@@ -418,12 +505,21 @@ impl Builder<'_> {
                 self.action(&s)
             });
         }
+        let iso = twins
+            .into_iter()
+            .map(|(card, cc, pair)| Iso {
+                card,
+                canon: cards.iter().position(|&x| x == cc).unwrap() as u16,
+                swap: pair,
+            })
+            .collect::<Vec<_>>();
         // Both players' four hole cards are also out of the deck.
-        let factor = 1.0 / (cards.len() - 4) as f32;
+        let factor = 1.0 / (cards.len() + iso.len() - 4) as f32;
         self.nodes[id] = Node::Chance {
             cards,
             children,
             factor,
+            iso,
         };
         id
     }
@@ -484,13 +580,22 @@ fn root_state(board: u64) -> State {
     }
 }
 
+fn rules_of(spot: &Spot) -> Rules<'_> {
+    Rules {
+        cfg: &spot.config,
+        start_street: spot.board.len() - 3,
+        sym: if spot.config.isomorphism {
+            range_symmetry(&spot.ranges)
+        } else {
+            [false; 6]
+        },
+    }
+}
+
 /// Tree size and hand counts of a spot, without building it.
 pub fn estimate(spot: &Spot) -> Result<(TreeSize, [usize; 2]), String> {
     let (board, live) = prepare(spot)?;
-    let rules = Rules {
-        cfg: &spot.config,
-        start_street: spot.board.len() - 3,
-    };
+    let rules = rules_of(spot);
     Ok((
         rules.count_action(&root_state(board)),
         [live[0].len(), live[1].len()],
@@ -502,10 +607,7 @@ pub fn estimate(spot: &Spot) -> Result<(TreeSize, [usize; 2]), String> {
 pub fn build(spot: &Spot) -> Result<Game, String> {
     let (board, live) = prepare(spot)?;
     let mut b = Builder {
-        rules: Rules {
-            cfg: &spot.config,
-            start_street: spot.board.len() - 3,
-        },
+        rules: rules_of(spot),
         nodes: Vec::new(),
         boards: HashMap::new(),
         board_list: Vec::new(),
@@ -544,12 +646,44 @@ pub fn build(spot: &Spot) -> Result<Game, String> {
         })
         .collect();
 
+    // Hand permutation for every suit pair the ranges are symmetric in. A pair is used at a chance
+    // node whose board it maps onto itself; that board may not be the starting one (a turn 2h makes
+    // c and h interchangeable on Ks7d2c), so a swapped hand can be missing from the hand list. Such a
+    // hand holds a card of the current board (2h here), is skipped where the permutation is used, and
+    // maps to itself. Pairs the ranges are not symmetric in are never used and keep the identity.
+    let swaps = SUIT_PAIRS
+        .iter()
+        .enumerate()
+        .map(|(i, &pair)| {
+            let usable = b.rules.sym[i];
+            [0, 1].map(|p| {
+                let index: HashMap<u64, u32> = hands[p]
+                    .iter()
+                    .enumerate()
+                    .map(|(h, &m)| (m, h as u32))
+                    .collect();
+                hands[p]
+                    .iter()
+                    .enumerate()
+                    .map(|(h, &m)| {
+                        if usable {
+                            index.get(&swap_mask(m, pair)).copied().unwrap_or(h as u32)
+                        } else {
+                            h as u32
+                        }
+                    })
+                    .collect::<Vec<u32>>()
+            })
+        })
+        .collect();
+
     let game = Game {
         nodes: b.nodes,
         hands,
         weights,
         strengths,
         board_masks: b.board_list,
+        swaps,
         start_pot: spot.config.start_pot,
     };
     game.validate();

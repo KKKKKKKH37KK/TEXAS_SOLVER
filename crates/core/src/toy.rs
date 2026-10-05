@@ -70,6 +70,7 @@ impl Limit {
             cards,
             children,
             factor: 1.0 / self.chance_count as f32,
+            iso: vec![],
         };
         id
     }
@@ -146,6 +147,7 @@ fn build(mut g: Limit, n_cards: u8, strengths: Vec<[Vec<u32>; 2]>, board_masks: 
         hands: [hands.clone(), hands],
         strengths,
         board_masks,
+        swaps: vec![],
         start_pot: 2.0 * g.ante,
     };
     game.validate();

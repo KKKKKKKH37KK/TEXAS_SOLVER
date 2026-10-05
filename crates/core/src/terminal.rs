@@ -276,6 +276,7 @@ mod tests {
             hands: masks,
             strengths: vec![strengths],
             board_masks: vec![dead],
+            swaps: vec![],
             start_pot: 1.0,
         };
         (game, reach)

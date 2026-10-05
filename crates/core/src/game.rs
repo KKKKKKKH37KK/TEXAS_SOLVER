@@ -40,10 +40,13 @@ pub enum Node {
         children: Vec<usize>,
     },
     /// Deals one public card. `factor` = 1 / (number of cards that can actually come, given both hands).
+    /// `cards` have their own subtrees; each `iso` card reuses the subtree of a suit-isomorphic card
+    /// with hands mapped through `Game::swaps`.
     Chance {
         cards: Vec<u8>,
         children: Vec<usize>,
         factor: f32,
+        iso: Vec<Iso>,
     },
     /// `pot` = everything in the middle including dead money; `contrib` = what each player put in during
     /// this game; `rake` is taken from the winner.
@@ -62,6 +65,16 @@ pub enum Node {
     },
 }
 
+/// A card dealt at a chance node whose subtree is the one of `cards[canon]` with two suits swapped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Iso {
+    pub card: u8,
+    /// Index into the chance node's `cards` / `children`.
+    pub canon: u16,
+    /// Index into `Game::swaps`.
+    pub swap: u8,
+}
+
 #[derive(Clone, Debug)]
 pub struct Game {
     /// Root is node 0.
@@ -74,6 +87,9 @@ pub struct Game {
     pub strengths: Vec<[Vec<u32>; 2]>,
     /// Card mask of each showdown board (parallel to `strengths`); hands touching it are skipped.
     pub board_masks: Vec<u64>,
+    /// Hand permutations used by `Iso`: `swaps[s][p][h]` is the index of hand h of player p with the
+    /// two suits of swap s exchanged.
+    pub swaps: Vec<[Vec<u32>; 2]>,
     /// Pot at the root, for reporting results as a share of the pot.
     pub start_pot: f64,
 }
@@ -112,6 +128,11 @@ impl Game {
         assert_eq!(self.strengths.len(), self.board_masks.len());
         assert_eq!(self.hands[0].len(), self.weights[0].len());
         assert_eq!(self.hands[1].len(), self.weights[1].len());
+        for s in &self.swaps {
+            for (table, hands) in s.iter().zip(&self.hands) {
+                assert_eq!(table.len(), hands.len(), "swap table size");
+            }
+        }
         for (i, n) in self.nodes.iter().enumerate() {
             match n {
                 Node::Action {
@@ -133,11 +154,19 @@ impl Game {
                     cards,
                     children,
                     factor,
+                    iso,
                 } => {
                     assert!(
                         cards.len() == children.len() && *factor > 0.0,
                         "node {i}: bad chance node"
                     );
+                    for x in iso {
+                        assert!(
+                            (x.canon as usize) < cards.len()
+                                && (x.swap as usize) < self.swaps.len(),
+                            "node {i}: bad isomorphic card"
+                        );
+                    }
                 }
                 Node::Showdown { board, .. } => {
                     assert!(*board < self.strengths.len(), "node {i}: bad board index");

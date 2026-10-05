@@ -165,6 +165,140 @@ fn flop_spot_with_allin_runouts_converges() {
     assert!((r.ev[0] + r.ev[1] - 10.0).abs() < 1e-3);
 }
 
+/// Check-down EV of OOP over every compatible hand pair and run-out, by enumeration.
+fn brute_force_checkdown(game: &Game, board: &[Card], pot: f64) -> f64 {
+    let bm = mask_of(board);
+    let cards = |m: u64| -> Vec<Card> {
+        (0..52u8)
+            .filter(|&c| m >> c & 1 == 1)
+            .map(Card::from_index)
+            .collect()
+    };
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for &h in &game.hands[0] {
+        for &o in &game.hands[1] {
+            if h & o != 0 {
+                continue;
+            }
+            let dead = bm | h | o;
+            let rest: Vec<u8> = (0..52u8).filter(|&c| dead >> c & 1 == 0).collect();
+            let mut runouts: Vec<u64> = vec![];
+            for i in 0..rest.len() {
+                for j in i + 1..rest.len() {
+                    runouts.push(1 << rest[i] | 1 << rest[j]);
+                }
+            }
+            let mut eq = 0.0;
+            for r in &runouts {
+                let (a, b) = (evaluate(&cards(bm | r | h)), evaluate(&cards(bm | r | o)));
+                eq += if a > b {
+                    1.0
+                } else if a == b {
+                    0.5
+                } else {
+                    0.0
+                };
+            }
+            num += eq / runouts.len() as f64;
+            den += 1.0;
+        }
+    }
+    pot * num / den
+}
+
+#[test]
+fn isomorphic_runouts_equal_enumeration() {
+    // Rainbow: the turn can create a river symmetry the flop does not have (2h makes c and h
+    // interchangeable on Ks7d2c). Paired: d and s. Monotone: c, d and h.
+    for board in ["Ks7d2c", "KsKd2c", "Ks7s2s"] {
+        let mut cfg = TreeConfig::new(10.0, 0.0);
+        cfg.rake = Rake::NONE;
+        let s = spot(board, "AA,A5s", "77,QQ", cfg);
+        let game = build(&s).unwrap();
+        let ev = solve(&game, 1).report().ev[0];
+        let bf = brute_force_checkdown(&game, &s.board, 10.0);
+        assert!((ev - bf).abs() < 1e-4, "{board}: {ev} vs {bf}");
+    }
+}
+
+#[test]
+fn isomorphism_matches_the_full_tree() {
+    // Monotone flop (three interchangeable suits), paired flop (two), and a turn spot. Float
+    // rounding takes the two runs down slightly different paths, so compare loosely.
+    for (board, saving) in [("Ks7s2s", 0.4), ("KsKd2c", 0.15), ("Ks7s2s5d", 0.2)] {
+        let mut cfg = TreeConfig::new(10.0, 20.0).with_sizes(small_sizes());
+        cfg.rake = Rake::NONE;
+        let iso_spot = spot(
+            board,
+            "AA,KK,77,AKs,KQs,T9s",
+            "QQ-88,AQs,KJs,JTs",
+            cfg.clone(),
+        );
+        cfg.isomorphism = false;
+        let full_spot = spot(board, "AA,KK,77,AKs,KQs,T9s", "QQ-88,AQs,KJs,JTs", cfg);
+
+        let (t_iso, hands) = estimate(&iso_spot).unwrap();
+        let (t_full, _) = estimate(&full_spot).unwrap();
+        let ratio = t_iso.solver_bytes(hands) as f64 / t_full.solver_bytes(hands) as f64;
+        assert!(ratio < 1.0 - saving, "{board}: memory ratio {ratio:.2}");
+
+        let (g_iso, g_full) = (build(&iso_spot).unwrap(), build(&full_spot).unwrap());
+        assert_eq!(
+            t_iso.action_nodes,
+            g_iso
+                .nodes
+                .iter()
+                .filter(|n| matches!(n, Node::Action { .. }))
+                .count() as u64
+        );
+        let (s_iso, s_full) = (solve(&g_iso, 100), solve(&g_full, 100));
+        let (r_iso, r_full) = (s_iso.report(), s_full.report());
+        for p in 0..2 {
+            assert!(
+                (r_iso.ev[p] - r_full.ev[p]).abs() < 1e-3,
+                "{board}: EV {p} {} vs {}",
+                r_iso.ev[p],
+                r_full.ev[p]
+            );
+        }
+        assert!(
+            r_iso.exploitability_pct < 0.5 && r_full.exploitability_pct < 0.5,
+            "{board}: exploitability {:.3}% vs {:.3}% pot",
+            r_iso.exploitability_pct,
+            r_full.exploitability_pct
+        );
+        // Root strategies agree hand by hand.
+        let (a, b) = (s_iso.strategy(0), s_full.strategy(0));
+        let diff = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max);
+        assert!(diff < 0.02, "{board}: root strategy differs by {diff}");
+    }
+}
+
+#[test]
+fn isomorphism_only_uses_suits_the_ranges_are_symmetric_in() {
+    let cfg = TreeConfig::new(10.0, 20.0).with_sizes(small_sizes());
+    let mut off = cfg.clone();
+    off.isomorphism = false;
+    let nodes = |oop: &str, c: &TreeConfig| {
+        estimate(&spot("Ks7s2s", oop, "QQ", c.clone()))
+            .unwrap()
+            .0
+            .action_nodes
+    };
+    // d, h, c are interchangeable on a spade flop. "AhAc" is symmetric only in h <-> c.
+    let all = nodes("AA,KK", &cfg);
+    let partial = nodes("AhAc,KK", &cfg);
+    let none = nodes("AA,KK", &off);
+    assert!(
+        all < partial && partial < none,
+        "{all} < {partial} < {none}"
+    );
+}
+
 #[test]
 fn flop_preset_follows_prd() {
     let cfg = TreeConfig::preset(5.5, 97.5, 3);

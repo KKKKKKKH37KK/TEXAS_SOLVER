@@ -4,7 +4,7 @@
 //! `[action][hand]` f32 arrays for the acting player. Values passed around are counterfactual values:
 //! for each traverser hand, Σ over compatible opponent hands of opponent reach × payoff.
 
-use crate::game::{Game, Node};
+use crate::game::{Game, Iso, Node};
 use crate::terminal::Terminals;
 use rayon::prelude::*;
 use std::cell::UnsafeCell;
@@ -141,12 +141,31 @@ fn without_card(reach: &[f32], hands: &[u64], card: u8) -> Vec<f32> {
 }
 
 /// Chance node value: Σ over cards of the child values × `factor`, skipping hands that hold the card.
-fn sum_chance(vals: &[Vec<f32>], cards: &[u8], hands: &[u64], factor: f32) -> Vec<f32> {
+///
+/// An isomorphic card's value for hand h is the canonical card's value for the suit-swapped hand.
+fn sum_chance(
+    vals: &[Vec<f32>],
+    cards: &[u8],
+    iso: &[Iso],
+    swaps: &[[Vec<u32>; 2]],
+    p: usize,
+    hands: &[u64],
+    factor: f32,
+) -> Vec<f32> {
     let mut out = vec![0.0f32; hands.len()];
     for (v, &c) in vals.iter().zip(cards) {
         for (h, x) in v.iter().enumerate() {
             if hands[h] >> c & 1 == 0 {
                 out[h] += x * factor;
+            }
+        }
+    }
+    for x in iso {
+        let v = &vals[x.canon as usize];
+        let perm = &swaps[x.swap as usize][p];
+        for (h, o) in out.iter_mut().enumerate() {
+            if hands[h] >> x.card & 1 == 0 {
+                *o += v[perm[h] as usize] * factor;
             }
         }
     }
@@ -260,6 +279,7 @@ impl<'g> Solver<'g> {
                 cards,
                 children,
                 factor,
+                iso,
             } => {
                 let vals: Vec<Vec<f32>> = cards
                     .par_iter()
@@ -270,7 +290,15 @@ impl<'g> Solver<'g> {
                         self.cfr(child, trav, &rt, &ro, d)
                     })
                     .collect();
-                sum_chance(&vals, cards, &game.hands[trav], *factor)
+                sum_chance(
+                    &vals,
+                    cards,
+                    iso,
+                    &game.swaps,
+                    trav,
+                    &game.hands[trav],
+                    *factor,
+                )
             }
             Node::Action {
                 player,
@@ -346,6 +374,7 @@ impl<'g> Solver<'g> {
                 cards,
                 children,
                 factor,
+                iso,
             } => {
                 let vals: Vec<Vec<f32>> = cards
                     .par_iter()
@@ -355,7 +384,7 @@ impl<'g> Solver<'g> {
                         self.values(child, p, &ro, mode)
                     })
                     .collect();
-                sum_chance(&vals, cards, &game.hands[p], *factor)
+                sum_chance(&vals, cards, iso, &game.swaps, p, &game.hands[p], *factor)
             }
             Node::Action {
                 player, children, ..
