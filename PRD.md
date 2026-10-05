@@ -123,9 +123,10 @@ hexas-solver/
   - GitHub Pages 不能自訂 header，所以用 coi-serviceworker 補上。
   - 補不上的時候退回單執行緒。
 - **Evaluator**：用 Rust 重寫 7-card evaluator（lookup table），驗證方式和 Stats Viewer 的 `src/equity/evaluator.ts` 相同。
-- **參考實作**：b-inary/postflop-solver（Rust、DCFR、支援 WASM，授權 AGPL-3.0，2023 年起停止維護）。
+- **參考實作**：b-inary/postflop-solver（Rust、DCFR、支援 WASM）。
+  - 2026-10-06 確認：授權 AGPL-3.0-or-later；作者從 2023-10 起暫停開發，最後一次 commit 是 2024-07；repo 沒有封存。
   - 只把它當做**驗證用的對照組**和設計參考，不複製它的程式碼，避免整個專案被迫採用 AGPL。
-  - 它的授權和狀態要在 M0 再確認一次。
+  - 對照程式放在 repo 外的 `C:\Users\KH\ref\hexas-compare`，不會發布。結果見 §8.4。
 
 ## 7. UI
 - **翻前範圍表**：6 個位置，13×13 格子，每格依行動頻率上色（fold / call / raise / all-in）。可以沿著行動線往下點。
@@ -155,6 +156,16 @@ hexas-solver/
    - 每個動作的頻率差 < 2%。
    - EV 差 < 0.5% pot。
    - 這項只在本機執行，CI 不跑。
+   - **2026-10-06 結果：通過**。兩邊都解到 exploitability 0.02% pot。
+     - 測試情境：
+       - 範圍是 postflop-solver 範例裡的 OOP 和 IP 範圍。
+       - 下注 50% / 100%，加注 3× 加 all-in，不自動改成 all-in，不合併尺寸。
+       - 河牌、轉牌各跑不抽水和抽水（5%、cap 30）兩種；翻牌用小樹（只有 50%，籌碼 2 倍底池）。
+     - EV 差距：全部 ≤ 0.011% pot。
+     - 根節點和 IP 面對最常見下注的頻率差：河牌、轉牌都 ≤ 0.7%。
+     - 翻牌的例外：「加注到 300」和「all-in 400」的分配差 3.4%，但兩者加總完全一樣（26.4%）。這兩個動作幾乎等價，均衡本來就不唯一。
+     - 只比較均衡路徑上會到達的節點。像是 OOP 從不下 pot 時「IP 面對 pot 下注」這種節點，均衡策略不唯一，比較沒有意義。
+     - 速度：postflop-solver 解到同樣精度約快 2.5 倍（轉牌 1.8 秒對 4.9 秒，小翻牌 13.6 秒對 33.4 秒），是之後效能優化的目標。
 5. **不變量**：
    - 籌碼守恆（含 rake）。
    - 每個節點的策略加總為 1。
