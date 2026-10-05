@@ -19,7 +19,7 @@ usage:
   hexas cards <cards>            card indices, e.g. hexas cards AsKd7c
   hexas eval <5-7 cards>         best five-card hand, e.g. hexas eval AsKsQsJsTs2d3c
   hexas tree [options]           tree size and memory estimate, without solving
-  hexas solve [options]          solve a heads-up spot, print the OOP root strategy
+  hexas solve [options]          solve a heads-up spot, print the first decision's strategy
   hexas --version | --help
 
 options (defaults in brackets):
@@ -35,6 +35,8 @@ options (defaults in brackets):
   --target <pct>        stop below this exploitability, % of pot [0.3]
   --out <file.hxs>      (solve) write a result file for the web app; a flop solve keeps flop and
                         turn strategies, rivers are re-solved in the browser
+  --gamma <x>           DCFR average-strategy discount exponent
+  --reset-avg | --no-reset-avg   restart the average strategy at iterations 4, 16, 64, ...
 
 tree presets (PRD 3.3), changed by the options below:
   flop spot:        flop 33,66,100,125 no donk | turn, river 66,125 | 1 raise per street
@@ -68,6 +70,9 @@ struct SpotArgs {
     target: f64,
     /// Result file to write after solving.
     out: Option<String>,
+    /// DCFR γ and average-strategy resets (see DcfrParams).
+    gamma: f64,
+    reset_avg: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
@@ -89,11 +94,17 @@ fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
         iters: 1000,
         target: 0.3,
         out: None,
+        gamma: DcfrParams::default().gamma,
+        reset_avg: DcfrParams::default().reset_average,
     };
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         if flag == "--donk" || flag == "--no-donk" {
             a.donk = Some(flag == "--donk");
+            continue;
+        }
+        if flag == "--reset-avg" || flag == "--no-reset-avg" {
+            a.reset_avg = flag == "--reset-avg";
             continue;
         }
         let v = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
@@ -118,6 +129,7 @@ fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
             "--iters" => a.iters = num(v)? as u32,
             "--target" => a.target = num(v)?,
             "--out" => a.out = Some(v.clone()),
+            "--gamma" => a.gamma = num(v)?,
             _ => return Err(format!("unknown option {flag} (see --help)")),
         }
     }
@@ -258,7 +270,12 @@ fn cmd_solve(a: &SpotArgs) -> Result<(), String> {
     }
     let t0 = Instant::now();
     let game = build(&spot)?;
-    let mut solver = Solver::new(&game, DcfrParams::default());
+    let params = DcfrParams {
+        gamma: a.gamma,
+        reset_average: a.reset_avg,
+        ..DcfrParams::default()
+    };
+    let mut solver = Solver::new(&game, params);
     println!("built in {:.2}s", t0.elapsed().as_secs_f64());
 
     let t0 = Instant::now();
@@ -306,23 +323,46 @@ fn cmd_solve(a: &SpotArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// OOP root strategy: overall frequencies and per hand class.
+/// Strategy at the first real decision: overall frequencies and per hand class. Forced single
+/// actions (OOP's check when it may not lead on the flop) are skipped, so the reach of the player
+/// shown is still its range.
 fn print_root(game: &Game, solver: &Solver) {
-    let Node::Action { actions, .. } = &game.nodes[0] else {
+    let mut node = 0;
+    let mut path = Vec::new();
+    while let Node::Action {
+        actions, children, ..
+    } = &game.nodes[node]
+    {
+        if actions.len() > 1 {
+            break;
+        }
+        path.push(actions[0].to_string());
+        node = children[0];
+    }
+    let Node::Action {
+        player, actions, ..
+    } = &game.nodes[node]
+    else {
         return;
     };
-    let st = solver.strategy(0);
-    let n = game.num_hands(0);
-    let w = &game.weights[0];
+    let p = *player;
+    let st = solver.strategy(node);
+    let n = game.num_hands(p);
+    let w = &game.weights[p];
     let total: f32 = w.iter().sum();
-    println!("\nOOP root strategy:");
+    let after = if path.is_empty() {
+        String::new()
+    } else {
+        format!(" after {}", path.join(", "))
+    };
+    println!("\n{} strategy{after}:", ["OOP", "IP"][p]);
     for (i, act) in actions.iter().enumerate() {
         let f: f32 = (0..n).map(|h| st[i * n + h] * w[h]).sum::<f32>() / total;
         println!("  {act:<14} {:5.1}%", f * 100.0);
     }
 
     // Per hand class: weighted average frequency of each action.
-    let labels = hand_labels(game, 0);
+    let labels = hand_labels(game, p);
     let mut by_class: BTreeMap<String, (Vec<f32>, f32)> = BTreeMap::new();
     for h in 0..n {
         let e = by_class
