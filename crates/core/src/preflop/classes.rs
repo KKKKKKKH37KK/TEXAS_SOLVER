@@ -63,6 +63,24 @@ pub fn class_of(a: Card, b: Card) -> usize {
     }
 }
 
+/// Range text from combo-weighted class reach, e.g. "AA,AKs:0.500": each class's weight is the
+/// share of its combos still in the range; classes below 0.1 % are left out.
+pub fn range_text(reach: &[f32]) -> String {
+    (0..NUM_CLASSES)
+        .filter_map(|i| {
+            let w = (reach[i] / combo_count(i) as f32).min(1.0);
+            if w < 0.001 {
+                None
+            } else if w > 0.999 {
+                Some(class_name(i))
+            } else {
+                Some(format!("{}:{w:.3}", class_name(i)))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Number of card-disjoint combo pairs between two classes, `[i][j]`.
 pub fn compatible_pairs() -> Vec<f32> {
     let all: Vec<Vec<u64>> = (0..NUM_CLASSES)
@@ -105,6 +123,17 @@ mod tests {
         assert_eq!(class_name(13), "AKo");
         assert_eq!(class_name(168), "22");
         assert_eq!(class_name(12 * 13 + 11), "32o");
+    }
+
+    #[test]
+    fn range_text_round_trips_through_the_parser() {
+        let mut reach = vec![0.0f32; NUM_CLASSES];
+        reach[0] = 6.0; // AA, all combos
+        reach[1] = 2.0; // AKs, half
+        let text = range_text(&reach);
+        assert_eq!(text, "AA,AKs:0.500");
+        let r: crate::range::Range = text.parse().unwrap();
+        assert_eq!(r.combos(), 8.0);
     }
 
     #[test]
