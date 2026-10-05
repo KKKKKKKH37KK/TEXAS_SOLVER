@@ -15,11 +15,15 @@
 //! - `view {path, ev, source}` → the node at the end of `path` in the solve (default) or the
 //!   imported file (`source: "import"`), see `query::walk`
 //! - `destroy` → frees the solve
+//! - `preflopCreate {config}` / `preflopStep {n}` / `preflopReport` / `preflopView {path}` → the
+//!   6-max preflop solver (a third, independent session); `path` is a list of action indices
 
 use hexas_core::cards::Card;
 use hexas_core::export::Imported;
 use hexas_core::game::{Action, Game};
 use hexas_core::holdem::{build, estimate};
+use hexas_core::preflop::classes::{NUM_CLASSES, class_name};
+use hexas_core::preflop::game::{PNode, POSITIONS, PreflopConfig, PreflopGame, PreflopSolver};
 use hexas_core::query::{Kind, Step, Strategies, View, hand_ev, to_real, walk};
 use hexas_core::solver::{DcfrParams, Solver};
 use hexas_core::spec::SpotSpec;
@@ -47,6 +51,41 @@ enum Request {
         source: Option<String>,
     },
     Destroy,
+    PreflopCreate {
+        config: Option<PreflopIn>,
+    },
+    PreflopStep {
+        n: u32,
+    },
+    PreflopReport,
+    PreflopView {
+        path: Vec<usize>,
+    },
+}
+
+/// Preflop settings; anything omitted keeps the PRD default.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PreflopIn {
+    stack: Option<f64>,
+    rake_pct: Option<f64>,
+    rake_cap: Option<f64>,
+    realization_ip: Option<f64>,
+    realization_oop: Option<f64>,
+}
+
+impl PreflopIn {
+    fn config(&self) -> PreflopConfig {
+        let d = PreflopConfig::default();
+        PreflopConfig {
+            stack: self.stack.unwrap_or(d.stack),
+            rake_pct: self.rake_pct.unwrap_or(d.rake_pct),
+            rake_cap: self.rake_cap.unwrap_or(d.rake_cap),
+            realization_ip: self.realization_ip.unwrap_or(d.realization_ip),
+            realization_oop: self.realization_oop.unwrap_or(d.realization_oop),
+            ..d
+        }
+    }
 }
 
 /// A path step: `{"a": 1}` takes action 1, `{"c": "5h"}` deals a card.
@@ -77,6 +116,7 @@ impl Drop for Session {
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
     static IMPORT: RefCell<Option<Imported>> = const { RefCell::new(None) };
+    static PREFLOP: RefCell<Option<PreflopSolver>> = const { RefCell::new(None) };
     static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -229,7 +269,73 @@ pub fn handle(req: &str) -> Result<Value, String> {
             SESSION.with(|s| s.borrow_mut().take());
             Ok(json!({}))
         }
+        Request::PreflopCreate { config } => {
+            let solver = PreflopSolver::new(PreflopGame::new(config.unwrap_or_default().config()));
+            let nodes = solver.game.nodes.len();
+            PREFLOP.with(|p| *p.borrow_mut() = Some(solver));
+            Ok(json!({ "nodes": nodes }))
+        }
+        Request::PreflopStep { n } => with_preflop(|s| {
+            for _ in 0..n {
+                s.iterate();
+            }
+            Ok(json!({ "iteration": s.iterations() }))
+        }),
+        Request::PreflopReport => with_preflop(|s| {
+            let r = s.report();
+            Ok(json!({ "iteration": s.iterations(), "ev": r.ev, "brGainBb100": r.br_gain_bb100 }))
+        }),
+        Request::PreflopView { path } => with_preflop(|s| {
+            let (node, reach) = s.walk(&path)?;
+            let classes: Vec<String> = (0..NUM_CLASSES).map(class_name).collect();
+            let (kind, player, actions, strategy, contrib, players) = match &s.game.nodes[node] {
+                PNode::Act {
+                    player, actions, ..
+                } => (
+                    "action",
+                    Some(*player),
+                    actions.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                    Some(s.strategy(node)),
+                    None,
+                    vec![],
+                ),
+                PNode::Fold { winner, contrib } => {
+                    ("fold", None, vec![], None, Some(*contrib), vec![*winner])
+                }
+                PNode::AllIn { players, contrib } => (
+                    "allin",
+                    None,
+                    vec![],
+                    None,
+                    Some(*contrib),
+                    players.to_vec(),
+                ),
+                PNode::Flop { players, contrib } => {
+                    ("flop", None, vec![], None, Some(*contrib), players.to_vec())
+                }
+            };
+            Ok(json!({
+                "kind": kind,
+                "player": player,
+                "positions": POSITIONS,
+                "actions": actions,
+                "strategy": strategy,
+                "reach": reach,
+                "classes": classes,
+                "contrib": contrib,
+                "players": players,
+            }))
+        }),
     }
+}
+
+fn with_preflop(
+    f: impl FnOnce(&mut PreflopSolver) -> Result<Value, String>,
+) -> Result<Value, String> {
+    PREFLOP.with(|p| match p.borrow_mut().as_mut() {
+        Some(s) => f(s),
+        None => Err("no preflop solve: call preflopCreate first".into()),
+    })
 }
 
 /// Loads a result file into the import session and returns its header.

@@ -41,6 +41,24 @@ fn estimate_create_solve_view() {
 }
 
 #[test]
+fn preflop_session() {
+    call(r#"{"cmd":"preflopCreate"}"#);
+    assert_eq!(call(r#"{"cmd":"preflopStep","n":20}"#)["iteration"], 20);
+    let r = call(r#"{"cmd":"preflopReport"}"#);
+    assert_eq!(r["ev"].as_array().unwrap().len(), 6);
+    let root = call(r#"{"cmd":"preflopView","path":[]}"#);
+    assert_eq!(root["kind"], "action");
+    assert_eq!(root["player"], 0);
+    assert_eq!(root["actions"][1], "Raise 2.5");
+    assert_eq!(root["strategy"].as_array().unwrap().len(), 2 * 169);
+    assert_eq!(root["classes"][0], "AA");
+    // UTG opens, everyone folds: UTG wins.
+    let won = call(r#"{"cmd":"preflopView","path":[1,0,0,0,0,0]}"#);
+    assert_eq!(won["kind"], "fold");
+    assert_eq!(won["players"][0], 0);
+}
+
+#[test]
 fn errors_are_reported() {
     assert!(handle("not json").is_err());
     assert!(
