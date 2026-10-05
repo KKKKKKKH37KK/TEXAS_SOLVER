@@ -9,3 +9,6 @@ web/dist/
 .claude/
 *.zip
 data/private/
+
+# Built by web/scripts/build-wasm.mjs
+web/src/wasm/

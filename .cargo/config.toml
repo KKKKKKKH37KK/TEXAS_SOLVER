@@ -1,0 +1,3 @@
+# WebAssembly SIMD (supported by Chrome, Firefox, Edge and Safari 16.4+) lets the per-hand loops vectorise.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

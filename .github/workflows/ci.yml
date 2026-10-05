@@ -36,5 +36,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # `npm run build` compiles the wasm solver first; rust-toolchain.toml brings the wasm32 target.
+      - run: rustup show
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
       - run: npm ci
+      - run: npm test
       - run: npm run build
