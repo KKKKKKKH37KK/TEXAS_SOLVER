@@ -85,6 +85,16 @@ export class SolverClient {
     return this.call<PreflopView>({ cmd: 'preflopView', path });
   }
 
+  /** Library flop for a real flop, and the real → library suit map. */
+  canonicalFlop(board: string) {
+    return this.call<{ name: string; map: number[] }>({ cmd: 'canonicalFlop', board });
+  }
+
+  /** Show the imported file in real suits (after loading a library flop). */
+  importMap(map: number[]) {
+    return this.call<object>({ cmd: 'importMap', map });
+  }
+
   /** Loads a result file (.hxs) into the import session. The buffer is transferred. */
   load(bytes: ArrayBuffer) {
     const id = this.nextId++;

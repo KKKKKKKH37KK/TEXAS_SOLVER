@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { SolverClient } from './solver/client';
 import type { Estimate, NodeView, Report, ResultHeader, Source, SpotIn } from './solver/protocol';
 import { toComboWeights } from './ui/cards';
+import { libraryUrl } from './ui/library';
 import { NodeBrowser, type PathItem } from './ui/NodeBrowser';
 import { type Handoff, PreflopPanel } from './ui/PreflopPanel';
 import { SpotForm, type SolveSettings } from './ui/SpotForm';
@@ -97,6 +98,30 @@ export function App() {
     await go('import', []);
   };
 
+  /** Opens a library flop: the file of its suit-isomorphic representative, shown in real suits. */
+  const onLibrary = async (line: string, flop: string, label: string) => {
+    setStatus('working');
+    const res = await run(async () => {
+      const c = await client.current!.canonicalFlop(flop);
+      const r = await fetch(libraryUrl(line, c.name));
+      if (!r.ok) {
+        throw new Error(
+          `解庫裡還沒有這個翻牌（${line} / ${c.name}）。解庫還在建置中，或這個網站沒有附解庫（目前只有本機 npm run dev 會讀 library/）。`,
+        );
+      }
+      const loaded = await client.current!.load(await r.arrayBuffer());
+      await client.current!.importMap(c.map);
+      return loaded;
+    });
+    setStatus('idle');
+    if (!res) return;
+    setHeader(res.header);
+    setSubgame(label);
+    setMode('import');
+    setPage('postflop');
+    await go('import', []);
+  };
+
   /** Re-solves the street that starts at an imported node, from both players' reach there. */
   const resolveHere = (view: NodeView) => {
     if (!header) return;
@@ -144,7 +169,9 @@ export function App() {
             setIncoming({ ...h, id: Date.now() });
             setPage('postflop');
           }}
+          onLibrary={onLibrary}
         />
+        {error && <p className="error">{error}</p>}
       </div>
       <div hidden={page !== 'postflop'}>
       <header className="top">
@@ -219,7 +246,11 @@ export function App() {
             {header.iterations} iterations · exploitability {header.exploitabilityPct.toFixed(3)}% pot · EV OOP{' '}
             {header.ev[0].toFixed(2)} / IP {header.ev[1].toFixed(2)} bb
           </span>
-          <span className="muted small">策略存到 {header.maxBoard === 4 ? '轉牌' : '河牌'}；河牌可在瀏覽器重解。</span>
+          <span className="muted small">
+            {header.maxBoard === 3
+              ? '解庫只存翻牌策略（檔名是花色同構的代表翻牌）；轉牌和河牌在瀏覽器用當下範圍重解。'
+              : `策略存到${header.maxBoard === 4 ? '轉牌' : '河牌'}；河牌可在瀏覽器重解。`}
+          </span>
         </section>
       )}
 

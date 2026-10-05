@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { SolverClient } from '../solver/client';
 import type { PreflopConfigIn, PreflopReport, PreflopView } from '../solver/protocol';
 import { actionColors, pct } from './grid';
+import { libraryLineOf } from './library';
 import { preflopActionInfo, preflopAggregate, rangeText } from './preflop';
 import { RangeGrid } from './RangeGrid';
 
@@ -17,12 +18,15 @@ export interface Handoff {
 interface Props {
   client: SolverClient;
   onPostflop: (h: Handoff) => void;
+  /** Opens a flop of the pre-solved library for this line. */
+  onLibrary: (line: string, flop: string, label: string) => void;
 }
 
 const yieldToUi = () => new Promise((r) => setTimeout(r, 0));
 
 /** 6-max preflop solve and range browser (PRD M4). */
-export function PreflopPanel({ client, onPostflop }: Props) {
+export function PreflopPanel({ client, onPostflop, onLibrary }: Props) {
+  const [flop, setFlop] = useState('');
   const [config, setConfig] = useState<Required<PreflopConfigIn>>({
     stack: 100,
     rakePct: 5,
@@ -167,6 +171,38 @@ export function PreflopPanel({ client, onPostflop }: Props) {
               </button>
             )}
           </div>
+          {view.kind === 'flop' &&
+            (() => {
+              const line = libraryLineOf(path.map((p) => p.label));
+              if (!line) {
+                return (
+                  <p className="muted small">
+                    這條線不在解庫裡（解庫：BTN vs BB SRP、BB 3bet BTN、BTN 3bet CO）。可以用「帶入翻後求解」或本機 CLI。
+                  </p>
+                );
+              }
+              const valid = /^([2-9TJQKA][cdhs]){3}$/i.test(flop.replace(/\s/g, ''));
+              return (
+                <div className="notice">
+                  <b>解庫</b>
+                  <span className="muted small">{line.label}</span>
+                  <label>
+                    翻牌
+                    <input value={flop} onChange={(e) => setFlop(e.target.value)} placeholder="Ks7d2c" size={10} />
+                  </label>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={!valid}
+                    onClick={() =>
+                      onLibrary(line.id, flop.replace(/\s/g, ''), `${line.label}：${flop.replace(/\s/g, '')}`)
+                    }
+                  >
+                    看翻牌策略
+                  </button>
+                </div>
+              );
+            })()}
           {view.kind === 'action' && (
             <div className="actionbar">
               {view.actions.map((a, i) => (

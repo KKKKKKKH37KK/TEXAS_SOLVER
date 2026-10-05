@@ -76,7 +76,9 @@ export type Request =
   | { cmd: 'preflopCreate'; config?: PreflopConfigIn }
   | { cmd: 'preflopStep'; n: number }
   | { cmd: 'preflopReport' }
-  | { cmd: 'preflopView'; path: number[] };
+  | { cmd: 'preflopView'; path: number[] }
+  | { cmd: 'canonicalFlop'; board: string }
+  | { cmd: 'importMap'; map: number[] };
 
 export interface PreflopConfigIn {
   stack?: number;
