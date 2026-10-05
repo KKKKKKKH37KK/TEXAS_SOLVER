@@ -94,7 +94,7 @@ impl Terminals {
         }
     }
 
-    fn removal(&self, p: usize, h: usize, card_sum: &[f64; 64], reach_o: &[f32]) -> f64 {
+    fn removal(&self, p: usize, h: usize, card_sum: &[f64; 256], reach_o: &[f32]) -> f64 {
         let [a, b] = self.cards[p][h];
         let mut x = card_sum[a as usize];
         if b != NONE {
@@ -107,9 +107,9 @@ impl Terminals {
         x
     }
 
-    fn card_sums(&self, o: usize, reach_o: &[f32]) -> (f64, [f64; 64]) {
+    fn card_sums(&self, o: usize, reach_o: &[f32]) -> (f64, [f64; 256]) {
         let mut total = 0.0;
-        let mut cs = [0.0f64; 64];
+        let mut cs = [0.0f64; 256];
         for (h, &r) in reach_o.iter().enumerate() {
             if r == 0.0 {
                 continue;
@@ -158,10 +158,10 @@ impl Terminals {
             [&self.sorted[board][1], &self.sorted[board][0]]
         };
         let mut out = vec![0.0f32; self.cards[p].len()];
-        let pair = |cs: &[f64; 64], [a, b]: [u8; 2]| {
+        let pair = |cs: &[f64; 256], [a, b]: [u8; 2]| {
             cs[a as usize] + if b != NONE { cs[b as usize] } else { 0.0 }
         };
-        let add = |cs: &mut [f64; 64], [a, b]: [u8; 2], r: f64| {
+        let add = |cs: &mut [f64; 256], [a, b]: [u8; 2], r: f64| {
             cs[a as usize] += r;
             if b != NONE {
                 cs[b as usize] += r;
@@ -169,7 +169,7 @@ impl Terminals {
         };
 
         // Totals over every opponent hand that can reach this board.
-        let (mut total, mut cs_all) = (0.0f64, [0.0f64; 64]);
+        let (mut total, mut cs_all) = (0.0f64, [0.0f64; 256]);
         for e in so {
             let r = reach_o[e.idx as usize] as f64;
             total += r;
@@ -182,7 +182,7 @@ impl Terminals {
 
         // Ascending: opponent hands strictly weaker than the traverser hand. An identical opponent
         // hand has equal strength, so it never enters these sums.
-        let (mut cum, mut cs, mut j) = (0.0f64, [0.0f64; 64], 0);
+        let (mut cum, mut cs, mut j) = (0.0f64, [0.0f64; 256], 0);
         for e in sp {
             while j < so.len() && so[j].strength < e.strength {
                 let r = reach_o[so[j].idx as usize] as f64;
@@ -200,7 +200,7 @@ impl Terminals {
         }
 
         // Descending: opponent hands strictly stronger.
-        let (mut cum, mut cs, mut j) = (0.0f64, [0.0f64; 64], so.len());
+        let (mut cum, mut cs, mut j) = (0.0f64, [0.0f64; 256], so.len());
         for e in sp.iter().rev() {
             while j > 0 && so[j - 1].strength > e.strength {
                 let r = reach_o[so[j - 1].idx as usize] as f64;
