@@ -1,0 +1,11 @@
+# Rust
+target/
+
+# Web
+node_modules/
+web/dist/
+
+# Local only
+.claude/
+*.zip
+data/private/

@@ -1,0 +1,12 @@
+[package]
+name = "hexas-cli"
+description = "Native front end for tests and benchmarks (solve / bench / compare)"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "hexas"
+path = "src/main.rs"
+
+[dependencies]
+hexas-core = { path = "../core" }

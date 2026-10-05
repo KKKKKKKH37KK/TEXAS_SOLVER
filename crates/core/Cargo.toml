@@ -1,0 +1,7 @@
+[package]
+name = "hexas-core"
+description = "Card model, hand evaluator and CFR solver core (pure Rust, no IO)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
