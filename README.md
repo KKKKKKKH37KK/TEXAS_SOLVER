@@ -12,7 +12,9 @@ web/           Vite + React + TS 前端
 ## 開發
 ```
 cargo test --workspace           # Rust 測試
-cargo run -p hexas-cli -- cards AsKd7c
+cargo test --release -p hexas-core --test evaluator -- --ignored   # 7 張牌窮舉驗證
+cargo run --release -p hexas-cli -- --help
+cargo run --release -p hexas-cli -- river --board Qs9h5d3c2s --oop "AA-22,AKs-A2s,KQo" --ip "TT-22,AQs-A2s,KQo-KJo"
 cd web && npm install && npm run dev
 ```
 

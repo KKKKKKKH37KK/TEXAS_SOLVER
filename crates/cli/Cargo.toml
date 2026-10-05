@@ -8,5 +8,6 @@ edition.workspace = true
 name = "hexas"
 path = "src/main.rs"
 
+# No clap: its windows-sys dependency needs MinGW's dlltool on the GNU toolchain.
 [dependencies]
 hexas-core = { path = "../core" }
