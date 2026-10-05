@@ -27,8 +27,6 @@ export function PreflopPanel({ client, onPostflop }: Props) {
     stack: 100,
     rakePct: 5,
     rakeCap: 3,
-    realizationIp: 1.0,
-    realizationOop: 0.85,
   });
   const [iters, setIters] = useState(300);
   const [busy, setBusy] = useState(false);
@@ -102,14 +100,12 @@ export function PreflopPanel({ client, onPostflop }: Props) {
         <h2>翻前 6-max</h2>
         <p className="muted small">
           近似解（PRD §4.2）：沒有 limp、第一個 call 就結束（只會 2 人看翻牌）、看翻牌後用 equity realization
-          係數估值。係數尚未校正，結果只適合看大方向。
+          係數估值（依底池類型與加注方位置寫死，見 PRD §4.2）。結果只適合看大方向。
         </p>
         <div className="row">
           {field('stack', '籌碼 Stack (bb)', 10)}
           {field('rakePct', '抽水 Rake %', 0.5)}
           {field('rakeCap', '上限 Cap (bb)', 0.5)}
-          {field('realizationIp', 'IP realization', 0.05)}
-          {field('realizationOop', 'OOP realization', 0.05)}
           <label>
             iteration
             <input type="number" step={100} value={iters} onChange={(e) => setIters(Number(e.target.value))} />

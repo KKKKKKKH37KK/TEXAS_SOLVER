@@ -16,3 +16,6 @@ web/src/wasm/
 # Result files written by hexas solve --out
 results/
 *.hxs
+
+# Flop library built by hexas library
+library/

@@ -34,13 +34,58 @@ pub struct PreflopConfig {
     pub allin_fraction: f64,
     pub rake_pct: f64,
     pub rake_cap: f64,
-    /// Equity realisation of the player in / out of position when a flop is seen.
-    pub realization_ip: f64,
-    pub realization_oop: f64,
+    /// Equity realisation when a flop is seen, per situation.
+    pub realization: Realization,
 }
 
+/// Pot type of a flop: single-raised, 3-bet, 4-bet (or more).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PotType {
+    Srp = 0,
+    ThreeBet = 1,
+    FourBet = 2,
+}
+
+impl PotType {
+    /// From the number of raises before the call (1 = open).
+    pub fn from_level(level: usize) -> PotType {
+        match level {
+            0 | 1 => PotType::Srp,
+            2 => PotType::ThreeBet,
+            _ => PotType::FourBet,
+        }
+    }
+}
+
+/// k = R_IP / R_OOP by situation; only the ratio matters to the share model
+/// share_IP = eq·k / (eq·k + (1 − eq)). Indexed `[pot type][aggressor is in position]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Realization {
+    pub k: [[f64; 2]; 3],
+}
+
+impl Realization {
+    pub fn k(&self, pot: PotType, aggressor_ip: bool) -> f64 {
+        self.k[pot as usize][aggressor_ip as usize]
+    }
+}
+
+/// Fixed realisation table (PRD §4.2, M6), written by `hexas calibrate` from postflop solves of
+/// the library lines: SRP with the aggressor in position (BTN vs BB), 3-bet pots with the aggressor
+/// out of position (BB vs BTN) and in position (BTN vs CO). Situations without a calibrated line
+/// borrow the nearest one: a single-raised pot with the aggressor out of position (SB vs BB) uses
+/// the 3-bet value; 4-bet pots use the 3-bet values.
+pub const REALIZATION: Realization = Realization {
+    //    aggressor OOP, aggressor IP
+    k: [
+        [1.176, 1.176], // SRP
+        [1.176, 1.176], // 3-bet pot
+        [1.176, 1.176], // 4-bet pot
+    ],
+};
+
 impl Default for PreflopConfig {
-    /// PRD §3.2 / §11. Realisation factors are placeholders until calibrated (PRD §4.2, M6).
+    /// PRD §3.2 / §11.
     fn default() -> Self {
         PreflopConfig {
             stack: 100.0,
@@ -52,8 +97,7 @@ impl Default for PreflopConfig {
             allin_fraction: 0.4,
             rake_pct: 0.05,
             rake_cap: 3.0,
-            realization_ip: 1.0,
-            realization_oop: 0.85,
+            realization: REALIZATION,
         }
     }
 }
@@ -99,6 +143,9 @@ pub enum PNode {
     Flop {
         players: [usize; 2],
         contrib: [f64; NUM_PLAYERS],
+        pot: PotType,
+        /// The last raiser, whom the other player called.
+        aggressor: usize,
     },
 }
 
@@ -247,6 +294,8 @@ impl PreflopGame {
                 PNode::Flop {
                     players: [oop, ip],
                     contrib,
+                    pot: PotType::from_level(st.level),
+                    aggressor: a,
                 }
             }));
         }
@@ -302,7 +351,10 @@ impl PreflopGame {
                 let u = if winner == t { pot } else { 0.0 } - contrib[t];
                 vec![(u * others(&[])) as f32; NUM_CLASSES]
             }
-            PNode::AllIn { players, contrib } | PNode::Flop { players, contrib } => {
+            PNode::AllIn { players, contrib }
+            | PNode::Flop {
+                players, contrib, ..
+            } => {
                 if !players.contains(&t) {
                     return vec![(-contrib[t] * others(&[])) as f32; NUM_CLASSES];
                 }
@@ -313,13 +365,16 @@ impl PreflopGame {
                 };
                 let pot: f64 = contrib.iter().sum();
                 let net = pot - self.rake(pot);
-                let flop = matches!(node, PNode::Flop { .. });
-                // Realisation: t is in position iff it is players[1].
-                let (rt, ro) = if players[1] == t {
-                    (self.config.realization_ip, self.config.realization_oop)
-                } else {
-                    (self.config.realization_oop, self.config.realization_ip)
+                // Realisation (flops only): with k = R_IP / R_OOP for this situation, t's weight
+                // is k when t is in position (players[1]), 1 otherwise, and the opponent's the rest.
+                let (rt, ro) = match *node {
+                    PNode::Flop { pot, aggressor, .. } => {
+                        let k = self.config.realization.k(pot, aggressor == players[1]);
+                        if players[1] == t { (k, 1.0) } else { (1.0, k) }
+                    }
+                    _ => (1.0, 1.0),
                 };
+                let flop = matches!(node, PNode::Flop { .. });
                 let rest = others(&[o]);
                 let ro_reach = &reach[o];
                 (0..NUM_CLASSES)
@@ -563,6 +618,25 @@ impl PreflopSolver {
             ev,
             br_gain_bb100: gain,
         }
+    }
+
+    /// Follows a line of action words from the root ("fold", "call", "raise", "all-in"; prefixes
+    /// are enough) and returns the action indices.
+    pub fn line_path(&self, words: &[&str]) -> Result<Vec<usize>, String> {
+        let mut path = Vec::new();
+        for word in words {
+            let (node, _) = self.walk(&path)?;
+            let PNode::Act { actions, .. } = &self.game.nodes[node] else {
+                return Err(format!("the line ends before {word:?}"));
+            };
+            let w = word.trim().to_lowercase();
+            let i = actions
+                .iter()
+                .position(|a| a.to_string().to_lowercase().starts_with(&w))
+                .ok_or_else(|| format!("{word:?} is not possible here"))?;
+            path.push(i);
+        }
+        Ok(path)
     }
 
     /// Follows actions from the root; returns the node and every player's reach there.

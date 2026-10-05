@@ -70,8 +70,6 @@ struct PreflopIn {
     stack: Option<f64>,
     rake_pct: Option<f64>,
     rake_cap: Option<f64>,
-    realization_ip: Option<f64>,
-    realization_oop: Option<f64>,
 }
 
 impl PreflopIn {
@@ -81,8 +79,6 @@ impl PreflopIn {
             stack: self.stack.unwrap_or(d.stack),
             rake_pct: self.rake_pct.unwrap_or(d.rake_pct),
             rake_cap: self.rake_cap.unwrap_or(d.rake_cap),
-            realization_ip: self.realization_ip.unwrap_or(d.realization_ip),
-            realization_oop: self.realization_oop.unwrap_or(d.realization_oop),
             ..d
         }
     }
@@ -310,9 +306,9 @@ pub fn handle(req: &str) -> Result<Value, String> {
                     Some(*contrib),
                     players.to_vec(),
                 ),
-                PNode::Flop { players, contrib } => {
-                    ("flop", None, vec![], None, Some(*contrib), players.to_vec())
-                }
+                PNode::Flop {
+                    players, contrib, ..
+                } => ("flop", None, vec![], None, Some(*contrib), players.to_vec()),
             };
             Ok(json!({
                 "kind": kind,

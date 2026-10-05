@@ -82,8 +82,6 @@ export interface PreflopConfigIn {
   stack?: number;
   rakePct?: number;
   rakeCap?: number;
-  realizationIp?: number;
-  realizationOop?: number;
 }
 
 export interface PreflopReport {

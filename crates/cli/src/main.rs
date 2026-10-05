@@ -5,6 +5,7 @@ use hexas_core::eval::{Category, evaluate};
 use hexas_core::export;
 use hexas_core::game::{Game, Node};
 use hexas_core::holdem::{Rake, Spot, TreeConfig, build, estimate, hand_labels};
+use hexas_core::library;
 use hexas_core::preflop::classes::{NUM_CLASSES, combo_count, range_text};
 use hexas_core::preflop::equity;
 use hexas_core::preflop::game::{PNode, POSITIONS, PreflopConfig, PreflopGame, PreflopSolver};
@@ -22,7 +23,12 @@ usage:
   hexas cards <cards>            card indices, e.g. hexas cards AsKd7c
   hexas eval <5-7 cards>         best five-card hand, e.g. hexas eval AsKsQsJsTs2d3c
   hexas tree [options]           tree size and memory estimate, without solving
-  hexas preflop [--iters N] [--stack BB] [--realization-ip X] [--realization-oop X]
+  hexas calibrate [--rounds 2] [--flops 10] [--target 1.0] [--threads N]
+                                 fit the preflop realisation table from postflop solves
+  hexas library --line ID [--dir library] [--hours 12] [--threads N] [--target 1.0]
+                                 solve all 1,755 flops of a line (srp-btn-bb, 3bp-bb-btn,
+                                 3bp-co-btn); resumes where it stopped
+  hexas preflop [--iters N] [--stack BB]
                 [--line fold,fold,fold,raise,fold,call]
                                  solve the 6-max preflop tree, print opening ranges; with --line,
                                  print both ranges of that heads-up line for `hexas solve`
@@ -164,6 +170,8 @@ fn main() -> ExitCode {
         Some("solve") => parse_args(&args[1..]).and_then(|a| cmd_solve(&a)),
         Some("gen-equity") => cmd_gen_equity(&args[1..]),
         Some("preflop") => cmd_preflop(&args[1..]),
+        Some("calibrate") => cmd_calibrate(&args[1..]),
+        Some("library") => cmd_library(&args[1..]),
         _ => Err("unknown command (see --help)".into()),
     };
     match result {
@@ -431,8 +439,6 @@ fn cmd_preflop(args: &[String]) -> Result<(), String> {
             "--stack" => config.stack = num(v)?,
             "--rake-pct" => config.rake_pct = num(v)? / 100.0,
             "--rake-cap" => config.rake_cap = num(v)?,
-            "--realization-ip" => config.realization_ip = num(v)?,
-            "--realization-oop" => config.realization_oop = num(v)?,
             "--line" => line = Some(v.clone()),
             _ => return Err(format!("unknown option {flag}")),
         }
@@ -481,24 +487,14 @@ fn cmd_preflop(args: &[String]) -> Result<(), String> {
 /// Follows a line like "fold,fold,fold,raise,fold,call" and prints where it ends; at a heads-up
 /// terminal, both ranges as text for `hexas solve --oop ... --ip ...`.
 fn print_line(solver: &PreflopSolver, line: &str) -> Result<(), String> {
-    let mut path = Vec::new();
-    for word in line.split(',').map(str::trim) {
-        let (node, _) = solver.walk(&path)?;
-        let PNode::Act { actions, .. } = &solver.game.nodes[node] else {
-            return Err(format!("the line ends before {word:?}"));
-        };
-        let i = actions
-            .iter()
-            .position(|a| {
-                let l = a.to_string().to_lowercase();
-                l.starts_with(&word.to_lowercase())
-            })
-            .ok_or_else(|| format!("{word:?} is not possible here"))?;
-        path.push(i);
-    }
+    let words: Vec<&str> = line.split(',').collect();
+    let path = solver.line_path(&words)?;
     let (node, reach) = solver.walk(&path)?;
     match &solver.game.nodes[node] {
-        PNode::Flop { players, contrib } | PNode::AllIn { players, contrib } => {
+        PNode::Flop {
+            players, contrib, ..
+        }
+        | PNode::AllIn { players, contrib } => {
             let pot: f64 = contrib.iter().sum();
             let [oop, ip] = *players;
             println!(
@@ -513,5 +509,192 @@ fn print_line(solver: &PreflopSolver, line: &str) -> Result<(), String> {
         PNode::Fold { winner, .. } => println!("\nline {line}: {} wins", POSITIONS[*winner]),
         PNode::Act { player, .. } => println!("\nline {line}: {} to act", POSITIONS[*player]),
     }
+    Ok(())
+}
+
+/// Options shared by `calibrate` and `library`: `--key value` pairs.
+fn options(args: &[String]) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut m = std::collections::HashMap::new();
+    let mut it = args.iter();
+    while let Some(k) = it.next() {
+        let v = it.next().ok_or_else(|| format!("{k} needs a value"))?;
+        m.insert(k.trim_start_matches("--").to_string(), v.clone());
+    }
+    Ok(m)
+}
+
+fn opt<T: std::str::FromStr>(
+    m: &std::collections::HashMap<String, String>,
+    key: &str,
+    default: T,
+) -> Result<T, String> {
+    match m.get(key) {
+        Some(v) => v.parse().map_err(|_| format!("--{key}: bad value {v}")),
+        None => Ok(default),
+    }
+}
+
+fn set_threads(n: usize) -> Result<(), String> {
+    if n > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Calibrates the preflop realisation table from postflop solves of the library lines.
+fn cmd_calibrate(args: &[String]) -> Result<(), String> {
+    let m = options(args)?;
+    let rounds: usize = opt(&m, "rounds", 2)?;
+    let flops: usize = opt(&m, "flops", 10)?;
+    let target: f64 = opt(&m, "target", 1.0)?;
+    set_threads(opt(&m, "threads", 0)?)?;
+    let mut table = PreflopConfig::default().realization;
+    let t0 = Instant::now();
+    for round in 1..=rounds {
+        println!("round {round}/{rounds} (start {:?})", table.k);
+        table = library::calibrate_round(table, flops, target, &mut |s| {
+            println!("{s}");
+        })?;
+        println!(
+            "round {round} done after {:.0} min: k = {:?}",
+            t0.elapsed().as_secs_f64() / 60.0,
+            table.k
+        );
+    }
+    println!("\nREALIZATION k table [SRP, 3-bet, 4-bet][aggressor OOP, aggressor IP]:");
+    for row in table.k {
+        println!("    [{:.3}, {:.3}],", row[0], row[1]);
+    }
+    Ok(())
+}
+
+/// Builds (or continues) the flop library of one line: one result file per representative flop.
+fn cmd_library(args: &[String]) -> Result<(), String> {
+    let m = options(args)?;
+    let id: String = opt(&m, "line", String::new())?;
+    let line = library::line(&id).ok_or_else(|| {
+        let ids: Vec<&str> = library::LINES.iter().map(|l| l.id).collect();
+        format!("--line must be one of {ids:?}")
+    })?;
+    let dir: String = opt(&m, "dir", "library".to_string())?;
+    let hours: f64 = opt(&m, "hours", 12.0)?;
+    let target: f64 = opt(&m, "target", 1.0)?;
+    let limit: usize = opt(&m, "limit", usize::MAX)?;
+    set_threads(opt(&m, "threads", 0)?)?;
+
+    let config = PreflopConfig::default();
+    let rake = Rake {
+        pct: config.rake_pct,
+        cap: config.rake_cap,
+    };
+    let mut pre = PreflopSolver::new(PreflopGame::new(config.clone()));
+    for _ in 0..300 {
+        pre.iterate();
+    }
+    let spot = library::line_spot(&pre, line)?;
+    let out = std::path::Path::new(&dir).join(line.id);
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+
+    // The library is only consistent for one set of ranges: refuse to mix.
+    let meta = format!(
+        "{{\"line\":\"{}\",\"pot\":{},\"stack\":{},\"oopIsAggressor\":{},\"realization\":{:?},\"oop\":\"{}\",\"ip\":\"{}\"}}\n",
+        line.id,
+        spot.pot,
+        spot.stack,
+        spot.oop_is_aggressor,
+        config.realization.k,
+        spot.ranges[0],
+        spot.ranges[1]
+    );
+    let meta_path = out.join("line.json");
+    match std::fs::read_to_string(&meta_path) {
+        Ok(old) if old != meta => {
+            return Err(format!(
+                "{} was built with other ranges or realisation; move it away to rebuild",
+                meta_path.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(_) => std::fs::write(&meta_path, &meta).map_err(|e| e.to_string())?,
+    }
+    let index = out.join("index.csv");
+    if !index.exists() {
+        std::fs::write(
+            &index,
+            "flop,seconds,iterations,exploitability_pct,ev_oop,ev_ip,bytes\n",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let flops = library::all_flops();
+    let done = flops
+        .iter()
+        .filter(|f| out.join(format!("{}.hxs", library::flop_name(f))).exists())
+        .count();
+    println!(
+        "{}: pot {:.1} bb, stack {:.1} bb; {done}/{} flops done; running up to {hours} h",
+        line.id,
+        spot.pot,
+        spot.stack,
+        flops.len()
+    );
+    let t0 = Instant::now();
+    let mut solved = 0;
+    for flop in &flops {
+        if t0.elapsed().as_secs_f64() > hours * 3600.0 || solved >= limit {
+            break;
+        }
+        let name = library::flop_name(flop);
+        let file = out.join(format!("{name}.hxs"));
+        if file.exists() {
+            continue;
+        }
+        let t = Instant::now();
+        let flop_spot = library::flop_spot(&spot, *flop, rake)?;
+        let game = build(&flop_spot)?;
+        let (solver, expl) = library::solve_to(&game, target, 1000);
+        let r = solver.report();
+        let bytes = export::write(
+            &solver,
+            &SpotSpec::describe(&flop_spot, &spot.ranges[0], &spot.ranges[1]),
+            3,
+        );
+        // Write then rename, so an interrupted run never leaves a half file that looks done.
+        let tmp = out.join(format!("{name}.tmp"));
+        std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &file).map_err(|e| e.to_string())?;
+        let secs = t.elapsed().as_secs_f64();
+        let row = format!(
+            "{name},{secs:.1},{},{expl:.3},{:.4},{:.4},{}\n",
+            solver.iterations(),
+            r.ev[0],
+            r.ev[1],
+            bytes.len()
+        );
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&index)
+            .and_then(|mut f| f.write_all(row.as_bytes()))
+            .map_err(|e| e.to_string())?;
+        solved += 1;
+        println!(
+            "[{}/{}] {name}: {secs:.0}s, {} iters, {expl:.2}% pot, {:.0} KB",
+            done + solved,
+            flops.len(),
+            solver.iterations(),
+            bytes.len() as f64 / 1e3
+        );
+    }
+    println!(
+        "stopped after {:.1} h: {} flops this run, {}/{} in total",
+        t0.elapsed().as_secs_f64() / 3600.0,
+        solved,
+        done + solved,
+        flops.len()
+    );
     Ok(())
 }
