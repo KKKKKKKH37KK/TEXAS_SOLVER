@@ -149,6 +149,8 @@ fn build(mut g: Limit, n_cards: u8, strengths: Vec<[Vec<u32>; 2]>, board_masks: 
         board_masks,
         swaps: vec![],
         start_pot: 2.0 * g.ante,
+        eff_stack: 0.0,
+        root_board: 0,
     };
     game.validate();
     game

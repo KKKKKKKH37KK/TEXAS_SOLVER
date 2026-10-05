@@ -92,6 +92,10 @@ pub struct Game {
     pub swaps: Vec<[Vec<u32>; 2]>,
     /// Pot at the root, for reporting results as a share of the pot.
     pub start_pot: f64,
+    /// Chips each player has behind at the root (0 for the toy games, which have fixed bets).
+    pub eff_stack: f64,
+    /// Board cards at the root (0 for the toy games).
+    pub root_board: u64,
 }
 
 impl Game {

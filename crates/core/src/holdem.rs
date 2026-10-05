@@ -175,9 +175,9 @@ enum Next {
 const EPS: f64 = 1e-9;
 
 /// The six suit transpositions, indexed as in `Game::swaps`.
-const SUIT_PAIRS: [(u8, u8); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+pub const SUIT_PAIRS: [(u8, u8); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
-fn swap_card(c: u8, (a, b): (u8, u8)) -> u8 {
+pub fn swap_card(c: u8, (a, b): (u8, u8)) -> u8 {
     let s = c % 4;
     if s == a {
         c - a + b
@@ -188,7 +188,7 @@ fn swap_card(c: u8, (a, b): (u8, u8)) -> u8 {
     }
 }
 
-fn swap_mask(mut m: u64, pair: (u8, u8)) -> u64 {
+pub fn swap_mask(mut m: u64, pair: (u8, u8)) -> u64 {
     let mut out = 0;
     while m != 0 {
         let c = m.trailing_zeros() as u8;
@@ -685,6 +685,8 @@ pub fn build(spot: &Spot) -> Result<Game, String> {
         board_masks: b.board_list,
         swaps,
         start_pot: spot.config.start_pot,
+        eff_stack: spot.config.eff_stack,
+        root_board: board,
     };
     game.validate();
     Ok(game)

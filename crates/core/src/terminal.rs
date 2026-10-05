@@ -278,6 +278,8 @@ mod tests {
             board_masks: vec![dead],
             swaps: vec![],
             start_pot: 1.0,
+            eff_stack: 0.0,
+            root_board: dead,
         };
         (game, reach)
     }

@@ -214,6 +214,21 @@ impl<'g> Solver<'g> {
         self.iteration
     }
 
+    pub fn game(&self) -> &'g Game {
+        self.game
+    }
+
+    /// EV in chips of each hand of player `p` at `node` under the average strategies, given the
+    /// opponent's reach there. Hands with no compatible opponent reach get 0.
+    pub fn node_ev(&self, node: usize, p: usize, reach_o: &[f32]) -> Vec<f64> {
+        let v = self.values(node, p, reach_o, Mode::Average);
+        let c = self.terms.compatible(p, reach_o);
+        v.iter()
+            .zip(c)
+            .map(|(&x, c)| if c > 1e-9 { x as f64 / c } else { 0.0 })
+            .collect()
+    }
+
     /// Runs one DCFR iteration: a regret update for each player in turn.
     pub fn iterate(&mut self) {
         self.iteration += 1;
