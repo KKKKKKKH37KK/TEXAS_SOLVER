@@ -1,5 +1,16 @@
 /** Promise-based access to the solver worker. */
-import type { Estimate, FromWorker, NodeView, PathStep, Report, Request, SpotIn, ToWorker } from './protocol';
+import type {
+  Estimate,
+  FromWorker,
+  NodeView,
+  PathStep,
+  Report,
+  Request,
+  ResultHeader,
+  Source,
+  SpotIn,
+  ToWorker,
+} from './protocol';
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
@@ -51,7 +62,16 @@ export class SolverClient {
     this.worker.postMessage({ type: 'stop' } satisfies ToWorker);
   }
 
-  view(path: PathStep[], ev = true) {
-    return this.call<NodeView>({ cmd: 'view', path, ev });
+  view(path: PathStep[], source: Source = 'solve', ev = true) {
+    return this.call<NodeView>({ cmd: 'view', path, ev, source });
+  }
+
+  /** Loads a result file (.hxs) into the import session. The buffer is transferred. */
+  load(bytes: ArrayBuffer) {
+    const id = this.nextId++;
+    return new Promise<{ header: ResultHeader; storedNodes: number }>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.worker.postMessage({ id, type: 'load', bytes } satisfies ToWorker, [bytes]);
+    });
   }
 }

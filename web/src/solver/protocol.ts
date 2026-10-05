@@ -11,6 +11,9 @@ export interface SpotIn {
   board: string;
   oop: string;
   ip: string;
+  /** Explicit weights per combo (1326), e.g. reach from a parent solve; replace the range text. */
+  oopWeights?: number[];
+  ipWeights?: number[];
   pot: number;
   stack: number;
   /** Flop, turn, river. Omitted: the PRD preset for the board. */
@@ -68,11 +71,26 @@ export type Request =
   | { cmd: 'create'; spot: SpotIn }
   | { cmd: 'step'; n: number }
   | { cmd: 'report' }
-  | { cmd: 'view'; path: PathStep[]; ev?: boolean }
+  | { cmd: 'view'; path: PathStep[]; ev?: boolean; source?: Source }
   | { cmd: 'destroy' };
+
+/** Which session a view reads: the live solve or an imported result file. */
+export type Source = 'solve' | 'import';
+
+/** Header of a result file written by `hexas solve --out` (crates/core/src/export.rs). */
+export interface ResultHeader {
+  spot: SpotIn;
+  iterations: number;
+  exploitabilityPct: number;
+  ev: [number, number];
+  nodes: number;
+  hands: [number, number];
+  maxBoard: number;
+}
 
 export type ToWorker =
   | { id: number; type: 'call'; req: Request }
+  | { id: number; type: 'load'; bytes: ArrayBuffer }
   | { id: number; type: 'solve'; maxIter: number; targetPct: number }
   | { type: 'stop' };
 

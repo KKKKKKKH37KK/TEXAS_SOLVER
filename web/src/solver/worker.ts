@@ -9,6 +9,7 @@ interface Exports {
   hx_alloc(len: number): number;
   hx_free(ptr: number, len: number): void;
   hx_call(ptr: number, len: number): number;
+  hx_load(ptr: number, len: number): number;
   hx_out_ptr(): number;
   hx_out_len(): number;
 }
@@ -24,17 +25,20 @@ function load(): Promise<Exports> {
   return wasm;
 }
 
-async function call<T>(req: Request): Promise<T> {
+/** Copies `data` into wasm memory, runs `entry` on it, and parses the JSON reply. */
+async function invoke<T>(data: Uint8Array, entry: (x: Exports, ptr: number, len: number) => number): Promise<T> {
   const x = await load();
-  const data = enc.encode(JSON.stringify(req));
   const ptr = x.hx_alloc(data.length);
   new Uint8Array(x.memory.buffer, ptr, data.length).set(data);
-  const code = x.hx_call(ptr, data.length);
+  const code = entry(x, ptr, data.length);
   x.hx_free(ptr, data.length);
   const reply = JSON.parse(dec.decode(new Uint8Array(x.memory.buffer, x.hx_out_ptr(), x.hx_out_len())));
   if (code !== 0) throw new Error(reply.error);
   return reply as T;
 }
+
+const call = <T>(req: Request) => invoke<T>(enc.encode(JSON.stringify(req)), (x, p, n) => x.hx_call(p, n));
+const loadFile = <T>(bytes: ArrayBuffer) => invoke<T>(new Uint8Array(bytes), (x, p, n) => x.hx_load(p, n));
 
 const yieldToEvents = () => new Promise((r) => setTimeout(r, 0));
 
@@ -85,7 +89,8 @@ ctx.onmessage = async (e: MessageEvent<ToWorker>) => {
     return;
   }
   try {
-    const reply = m.type === 'call' ? await call(m.req) : await solve(m.maxIter, m.targetPct);
+    const reply =
+      m.type === 'call' ? await call(m.req) : m.type === 'load' ? await loadFile(m.bytes) : await solve(m.maxIter, m.targetPct);
     ctx.postMessage({ id: m.id, ok: true, reply } satisfies FromWorker);
   } catch (err) {
     ctx.postMessage({ id: m.id, ok: false, error: err instanceof Error ? err.message : String(err) } satisfies FromWorker);

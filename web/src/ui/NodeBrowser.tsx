@@ -25,10 +25,12 @@ interface Props {
   view: NodeView;
   path: PathItem[];
   onGo: (path: PathItem[]) => void;
+  /** Offered where a result file stores no strategy: re-solve this street in the browser. */
+  onResolve?: (view: NodeView) => void;
 }
 
 /** Shows one node: where we are, what the acting player does, and the range grid. */
-export function NodeBrowser({ view, path, onGo }: Props) {
+export function NodeBrowser({ view, path, onGo, onResolve }: Props) {
   const acting = view.kind === 'action' ? view.player! : null;
   const [shown, setShown] = useState<number | null>(null);
   const player = shown ?? acting ?? 0;
@@ -77,7 +79,18 @@ export function NodeBrowser({ view, path, onGo }: Props) {
         </span>
       </div>
 
-      {view.kind === 'action' && (
+      {view.kind === 'action' && view.strategy === null && (
+        <div className="notice">
+          結果檔沒有存這個節點的策略（河牌只在需要時重解）。
+          {onResolve && view.street[0] === 0 && view.street[1] === 0 && (
+            <button type="button" className="primary" onClick={() => onResolve(view)}>
+              用這裡的範圍在瀏覽器重解這條街
+            </button>
+          )}
+        </div>
+      )}
+
+      {view.kind === 'action' && view.strategy !== null && (
         <div className="actionbar">
           {view.actions.map((a, i) => (
             <button
