@@ -2,4 +2,9 @@
 
 pub mod cards;
 pub mod eval;
+pub mod game;
+pub mod holdem;
 pub mod range;
+pub mod solver;
+pub mod terminal;
+pub mod toy;
