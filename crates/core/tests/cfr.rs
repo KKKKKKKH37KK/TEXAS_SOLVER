@@ -2,7 +2,7 @@
 
 use hexas_core::cards::parse_cards;
 use hexas_core::game::{Game, Node};
-use hexas_core::holdem::{BetSizes, Rake, RiverSpot, TreeConfig, build_river};
+use hexas_core::holdem::{BetSizes, Rake, Spot, TreeConfig, build};
 use hexas_core::solver::{DcfrParams, Solver};
 use hexas_core::toy::{kuhn, leduc};
 
@@ -76,19 +76,19 @@ fn exploitability_falls_with_iterations() {
 /// (3 of 12 air combos); IP calls 50 % (MDF).
 fn polarized_spot() -> Game {
     let mut cfg = TreeConfig::new(10.0, 100.0);
-    cfg.sizes = BetSizes {
+    cfg = cfg.with_sizes(BetSizes {
         bets: vec![1.0],
         raise_mult: 3.0,
         max_raises: 0,
         bet_allin: false,
-    };
+    });
     cfg.rake = Rake::NONE;
-    let spot = RiverSpot {
+    let spot = Spot {
         board: parse_cards("KdKs7h4c2d").unwrap(),
         ranges: ["AA,65o".parse().unwrap(), "QQ".parse().unwrap()],
         config: cfg,
     };
-    build_river(&spot).unwrap()
+    build(&spot).unwrap()
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn polarized_river_matches_theory() {
 fn realistic_spot(rake: Rake) -> Game {
     let mut cfg = TreeConfig::new(20.0, 90.0);
     cfg.rake = rake;
-    let spot = RiverSpot {
+    let spot = Spot {
         board: parse_cards("Qs9h5d3c2s").unwrap(),
         ranges: [
             "AA-22,AKs-A2s,KQs-K9s,QJs-Q9s,JTs,T9s,98s,87s,AKo-ATo,KQo,QJo"
@@ -146,7 +146,7 @@ fn realistic_spot(rake: Rake) -> Game {
         ],
         config: cfg,
     };
-    build_river(&spot).unwrap()
+    build(&spot).unwrap()
 }
 
 #[test]
