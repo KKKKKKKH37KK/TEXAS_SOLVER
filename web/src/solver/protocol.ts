@@ -72,7 +72,44 @@ export type Request =
   | { cmd: 'step'; n: number }
   | { cmd: 'report' }
   | { cmd: 'view'; path: PathStep[]; ev?: boolean; source?: Source }
-  | { cmd: 'destroy' };
+  | { cmd: 'destroy' }
+  | { cmd: 'preflopCreate'; config?: PreflopConfigIn }
+  | { cmd: 'preflopStep'; n: number }
+  | { cmd: 'preflopReport' }
+  | { cmd: 'preflopView'; path: number[] };
+
+export interface PreflopConfigIn {
+  stack?: number;
+  rakePct?: number;
+  rakeCap?: number;
+  realizationIp?: number;
+  realizationOop?: number;
+}
+
+export interface PreflopReport {
+  iteration: number;
+  /** bb per hand, per position. */
+  ev: number[];
+  /** What each position gains by best responding, bb/100. */
+  brGainBb100: number[];
+}
+
+export interface PreflopView {
+  kind: 'action' | 'fold' | 'allin' | 'flop';
+  player: number | null;
+  positions: string[];
+  /** Labels such as "Fold", "Call", "Raise 2.5", "All-in 100". */
+  actions: string[];
+  /** [action][class] for the player to act. */
+  strategy: number[] | null;
+  /** [position][class], combo-weighted. */
+  reach: number[][];
+  classes: string[];
+  /** Chips put in per position, at terminals. */
+  contrib: number[] | null;
+  /** Winner (fold) or the two players left (allin / flop: [OOP, IP]). */
+  players: number[];
+}
 
 /** Which session a view reads: the live solve or an imported result file. */
 export type Source = 'solve' | 'import';

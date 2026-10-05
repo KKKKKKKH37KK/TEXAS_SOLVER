@@ -3,6 +3,7 @@ import { SolverClient } from './solver/client';
 import type { Estimate, NodeView, Report, ResultHeader, Source, SpotIn } from './solver/protocol';
 import { toComboWeights } from './ui/cards';
 import { NodeBrowser, type PathItem } from './ui/NodeBrowser';
+import { PreflopPanel } from './ui/PreflopPanel';
 import { SpotForm, type SolveSettings } from './ui/SpotForm';
 
 /** Browser memory budget for one solve (PRD §5): wasm32 tops out at 4 GB. */
@@ -33,6 +34,7 @@ export function App() {
   const [imported, setImported] = useState<Browse | null>(null);
   const [header, setHeader] = useState<ResultHeader | null>(null);
   const [subgame, setSubgame] = useState<string | null>(null);
+  const [page, setPage] = useState<'postflop' | 'preflop'>('postflop');
 
   const run = useCallback(async <T,>(f: () => Promise<T>): Promise<T | null> => {
     setError(null);
@@ -114,11 +116,37 @@ export function App() {
   const busy = status === 'working' || status === 'solving';
   const shown = mode === 'solve' ? solved : imported;
 
+  const pages = (
+    <div className="tabs pages">
+      <button type="button" className={page === 'postflop' ? 'on' : ''} onClick={() => setPage('postflop')}>
+        翻後 Postflop
+      </button>
+      <button type="button" className={page === 'preflop' ? 'on' : ''} onClick={() => setPage('preflop')}>
+        翻前 Preflop
+      </button>
+    </div>
+  );
+
+  if (page === 'preflop') {
+    return (
+      <main>
+        <header className="top">
+          <div className="titlebar">
+            <h1>HEXAS Solver</h1>
+            {pages}
+          </div>
+        </header>
+        <PreflopPanel client={client.current} />
+      </main>
+    );
+  }
+
   return (
     <main>
       <header className="top">
         <div className="titlebar">
           <h1>HEXAS Solver</h1>
+          {pages}
           <label className="file">
             開啟結果檔（.hxs）
             <input

@@ -114,6 +114,10 @@ code {
   margin-bottom: 8px;
 }
 
+.tabs.pages {
+  margin: 0;
+}
+
 .muted {
   color: var(--muted);
 }

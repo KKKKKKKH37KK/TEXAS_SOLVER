@@ -4,6 +4,9 @@ import type {
   FromWorker,
   NodeView,
   PathStep,
+  PreflopConfigIn,
+  PreflopReport,
+  PreflopView,
   Report,
   Request,
   ResultHeader,
@@ -64,6 +67,22 @@ export class SolverClient {
 
   view(path: PathStep[], source: Source = 'solve', ev = true) {
     return this.call<NodeView>({ cmd: 'view', path, ev, source });
+  }
+
+  preflopCreate(config: PreflopConfigIn) {
+    return this.call<{ nodes: number }>({ cmd: 'preflopCreate', config });
+  }
+
+  preflopStep(n: number) {
+    return this.call<{ iteration: number }>({ cmd: 'preflopStep', n });
+  }
+
+  preflopReport() {
+    return this.call<PreflopReport>({ cmd: 'preflopReport' });
+  }
+
+  preflopView(path: number[]) {
+    return this.call<PreflopView>({ cmd: 'preflopView', path });
   }
 
   /** Loads a result file (.hxs) into the import session. The buffer is transferred. */
