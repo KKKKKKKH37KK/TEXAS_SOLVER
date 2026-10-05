@@ -4,8 +4,46 @@
 use std::fmt;
 use std::str::FromStr;
 
-const RANKS: &[u8; 13] = b"23456789TJQKA";
-const SUITS: &[u8; 4] = b"cdhs";
+pub const RANKS: &[u8; 13] = b"23456789TJQKA";
+pub const SUITS: &[u8; 4] = b"cdhs";
+
+/// Number of distinct two-card starting hands.
+pub const NUM_COMBOS: usize = 1326;
+
+/// Index of the two-card combo {a, b} in 0..1326 (order of the arguments does not matter).
+pub fn combo_index(a: Card, b: Card) -> usize {
+    let (lo, hi) = if a.0 < b.0 { (a.0, b.0) } else { (b.0, a.0) };
+    assert!(lo != hi, "a combo needs two different cards");
+    hi as usize * (hi as usize - 1) / 2 + lo as usize
+}
+
+/// Every combo in `combo_index` order.
+pub fn all_combos() -> Vec<(Card, Card)> {
+    let mut v = Vec::with_capacity(NUM_COMBOS);
+    for hi in 1..Card::COUNT as u8 {
+        for lo in 0..hi {
+            v.push((Card(hi), Card(lo)));
+        }
+    }
+    v
+}
+
+/// Bit mask with bit `card.index()` set for every card.
+pub fn mask_of(cards: &[Card]) -> u64 {
+    cards.iter().fold(0, |m, c| m | 1u64 << c.0)
+}
+
+/// Starting-hand class such as "AA", "AKs", "T9o" (higher rank first).
+pub fn hand_class(a: Card, b: Card) -> String {
+    let (hi, lo) = if a.rank() >= b.rank() { (a, b) } else { (b, a) };
+    let r = |c: Card| RANKS[c.rank() as usize] as char;
+    if hi.rank() == lo.rank() {
+        format!("{}{}", r(hi), r(lo))
+    } else {
+        let s = if hi.suit() == lo.suit() { 's' } else { 'o' };
+        format!("{}{}{s}", r(hi), r(lo))
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Card(u8);
@@ -126,5 +164,24 @@ mod tests {
         assert!(parse_cards("AsK").is_err());
         assert!("1s".parse::<Card>().is_err());
         assert!("Ax".parse::<Card>().is_err());
+    }
+
+    #[test]
+    fn combo_index_is_a_bijection() {
+        let combos = all_combos();
+        assert_eq!(combos.len(), NUM_COMBOS);
+        for (i, &(a, b)) in combos.iter().enumerate() {
+            assert_eq!(combo_index(a, b), i);
+            assert_eq!(combo_index(b, a), i);
+        }
+    }
+
+    #[test]
+    fn hand_classes() {
+        let c = |s: &str| s.parse::<Card>().unwrap();
+        assert_eq!(hand_class(c("Kd"), c("As")), "AKo");
+        assert_eq!(hand_class(c("9h"), c("Th")), "T9s");
+        assert_eq!(hand_class(c("2c"), c("2d")), "22");
+        assert_eq!(mask_of(&[c("2c"), c("As")]), 1 | 1 << 51);
     }
 }

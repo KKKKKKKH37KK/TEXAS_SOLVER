@@ -21,6 +21,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Exhaustive 7-card evaluator check (PRD §8.1): seconds in release, minutes in debug.
+      - run: cargo test --release -p hexas-core --test evaluator -- --ignored
 
   web:
     runs-on: ubuntu-latest
