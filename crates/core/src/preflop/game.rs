@@ -70,17 +70,19 @@ impl Realization {
     }
 }
 
-/// Fixed realisation table (PRD §4.2, M6), written by `hexas calibrate` from postflop solves of
-/// the library lines: SRP with the aggressor in position (BTN vs BB), 3-bet pots with the aggressor
-/// out of position (BB vs BTN) and in position (BTN vs CO). Situations without a calibrated line
-/// borrow the nearest one: a single-raised pot with the aggressor out of position (SB vs BB) uses
-/// the 3-bet value; 4-bet pots use the 3-bet values.
+/// Fixed realisation table (PRD §4.2, §9.1), from `hexas calibrate` (2 rounds × 10 flops per
+/// library line, 2026-10-07): SRP with the aggressor in position (BTN vs BB) 1.593; 3-bet pots
+/// with the aggressor out of position (BB vs BTN) 0.594. The 3-bet pot with the aggressor in
+/// position (BTN vs CO) did not converge (2.04 in round 1, the search bound 5.0 in round 2); 3.0
+/// is chosen because it gives strictly widening opening ranges. Situations without a calibrated
+/// line borrow the nearest one: a single-raised pot with the aggressor out of position (SB vs BB)
+/// uses the 3-bet value; 4-bet pots use the 3-bet values.
 pub const REALIZATION: Realization = Realization {
     //    aggressor OOP, aggressor IP
     k: [
-        [1.176, 1.176], // SRP
-        [1.176, 1.176], // 3-bet pot
-        [1.176, 1.176], // 4-bet pot
+        [0.594, 1.593], // SRP
+        [0.594, 3.000], // 3-bet pot
+        [0.594, 3.000], // 4-bet pot
     ],
 };
 
