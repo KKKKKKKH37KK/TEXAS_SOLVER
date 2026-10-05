@@ -1,0 +1,15 @@
+[package]
+name = "hexas-wasm"
+description = "Browser build of the solver: a JSON command interface over a plain C ABI"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# No wasm-bindgen: wasm-bindgen-cli cannot be built on this machine's GNU toolchain (dlltool), and a
+# single JSON entry point needs nothing more than exported functions and linear memory.
+[dependencies]
+hexas-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
