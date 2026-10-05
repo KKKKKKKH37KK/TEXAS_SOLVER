@@ -2,10 +2,12 @@
 
 use hexas_core::cards::parse_cards;
 use hexas_core::eval::{Category, evaluate};
+use hexas_core::export;
 use hexas_core::game::{Game, Node};
 use hexas_core::holdem::{Rake, Spot, TreeConfig, build, estimate, hand_labels};
 use hexas_core::range::Range;
 use hexas_core::solver::{DcfrParams, Solver};
+use hexas_core::spec::SpotSpec;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -31,6 +33,8 @@ options (defaults in brackets):
   --budget-mb <mb>      refuse to solve above this estimate [3000]
   --iters <n>           maximum iterations [1000]
   --target <pct>        stop below this exploitability, % of pot [0.3]
+  --out <file.hxs>      (solve) write a result file for the web app; a flop solve keeps flop and
+                        turn strategies, rivers are re-solved in the browser
 
 tree presets (PRD 3.3), changed by the options below:
   flop spot:        flop 33,66,100,125 no donk | turn, river 66,125 | 1 raise per street
@@ -62,6 +66,8 @@ struct SpotArgs {
     budget_mb: f64,
     iters: u32,
     target: f64,
+    /// Result file to write after solving.
+    out: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
@@ -82,6 +88,7 @@ fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
         budget_mb: 3000.0,
         iters: 1000,
         target: 0.3,
+        out: None,
     };
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -110,6 +117,7 @@ fn parse_args(args: &[String]) -> Result<SpotArgs, String> {
             "--budget-mb" => a.budget_mb = num(v)?,
             "--iters" => a.iters = num(v)? as u32,
             "--target" => a.target = num(v)?,
+            "--out" => a.out = Some(v.clone()),
             _ => return Err(format!("unknown option {flag} (see --help)")),
         }
     }
@@ -278,6 +286,23 @@ fn cmd_solve(a: &SpotArgs) -> Result<(), String> {
         report.exploitability_pct
     );
     print_root(&game, &solver);
+
+    if let Some(path) = &a.out {
+        // Flop solves keep flop and turn strategies; the web app re-solves rivers on demand.
+        let max_board = if spot.board.len() == 3 { 4 } else { 5 };
+        let t0 = Instant::now();
+        let bytes = export::write(
+            &solver,
+            &SpotSpec::describe(&spot, &a.oop, &a.ip),
+            max_board,
+        );
+        std::fs::write(path, &bytes).map_err(|e| format!("cannot write {path}: {e}"))?;
+        println!(
+            "\nwrote {path}: {:.1} MB in {:.1}s (open it in the web app)",
+            bytes.len() as f64 / 1e6,
+            t0.elapsed().as_secs_f64()
+        );
+    }
     Ok(())
 }
 

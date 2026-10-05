@@ -84,8 +84,25 @@ fn internal_index(game: &Game, perm: &[u8; 4]) -> [Vec<usize>; 2] {
     })
 }
 
+/// Something that knows the game tree and average strategies: a live solver, or a result file.
+pub trait Strategies {
+    fn game(&self) -> &Game;
+    /// Average strategy at an action node as `[action][hand]`, if known.
+    fn strategy(&self, node: usize) -> Option<Vec<f32>>;
+}
+
+impl Strategies for Solver<'_> {
+    fn game(&self) -> &Game {
+        Solver::game(self)
+    }
+
+    fn strategy(&self, node: usize) -> Option<Vec<f32>> {
+        Some(Solver::strategy(self, node))
+    }
+}
+
 /// Follows `path` from the root.
-pub fn walk(solver: &Solver, path: &[Step]) -> Result<View, String> {
+pub fn walk(solver: &impl Strategies, path: &[Step]) -> Result<View, String> {
     let game = solver.game();
     let mut node = 0;
     let mut perm = [0u8, 1, 2, 3];
@@ -107,7 +124,9 @@ pub fn walk(solver: &Solver, path: &[Step]) -> Result<View, String> {
             ) => {
                 let p = *player;
                 let act = *actions.get(a).ok_or_else(|| err("no such action"))?;
-                let sigma = solver.strategy(node);
+                let sigma = solver
+                    .strategy(node)
+                    .ok_or_else(|| err("no strategy stored for this node"))?;
                 let n = game.num_hands(p);
                 let idx = internal_index(game, &perm);
                 for (h, r) in reach[p].iter_mut().enumerate() {
@@ -166,22 +185,23 @@ pub fn walk(solver: &Solver, path: &[Step]) -> Result<View, String> {
             player, actions, ..
         } => {
             let p = *player;
-            let sigma = solver.strategy(node);
-            let n = game.num_hands(p);
-            let idx = internal_index(game, &perm);
-            let n_act = actions.len();
-            let mut s = vec![0.0f32; n_act * n];
-            for a in 0..n_act {
-                for h in 0..n {
-                    s[a * n + h] = sigma[a * n + idx[p][h]];
+            let strategy = solver.strategy(node).map(|sigma| {
+                let n = game.num_hands(p);
+                let idx = internal_index(game, &perm);
+                let mut s = vec![0.0f32; actions.len() * n];
+                for a in 0..actions.len() {
+                    for h in 0..n {
+                        s[a * n + h] = sigma[a * n + idx[p][h]];
+                    }
                 }
-            }
+                s
+            });
             (
                 Kind::Action {
                     player: p,
                     actions: actions.clone(),
                 },
-                Some(s),
+                strategy,
             )
         }
         Node::Chance { .. } => (Kind::Chance, None),
@@ -201,9 +221,18 @@ pub fn walk(solver: &Solver, path: &[Step]) -> Result<View, String> {
     })
 }
 
+/// Maps per-hand values from the solved tree's suits back to real hands (indexed like
+/// `Game::hands`).
+pub fn to_real<T: Copy>(game: &Game, view: &View, p: usize, internal: &[T]) -> Vec<T> {
+    let idx = internal_index(game, &view.perm);
+    (0..game.num_hands(p))
+        .map(|h| internal[idx[p][h]])
+        .collect()
+}
+
 /// EV in chips of each of player `p`'s hands at the view's node (indexed like `Game::hands`).
 pub fn hand_ev(solver: &Solver, view: &View, p: usize) -> Vec<f64> {
-    let game = solver.game();
+    let game = Solver::game(solver);
     let idx = internal_index(game, &view.perm);
     let o = 1 - p;
     // Opponent reach in the solved tree's suits.

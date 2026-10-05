@@ -1,96 +1,51 @@
-//! Browser interface (PRD §6, M3): one solving session, driven by JSON commands.
+//! Browser interface (PRD §6, M3), driven by JSON commands.
 //!
 //! JS writes a UTF-8 JSON request into memory from `hx_alloc`, calls `hx_call(ptr, len)`, and
 //! reads the JSON reply at `hx_out_ptr()` / `hx_out_len()`. `hx_call` returns 0 on success and 1 when
-//! the reply is `{"error": "..."}`. The same `handle` function is used natively in tests.
+//! the reply is `{"error": "..."}`. A result file is passed as raw bytes to `hx_load(ptr, len)`,
+//! which replies the same way. The same `handle` / `load` functions are used natively in tests.
+//!
+//! There are two independent sessions: a live solve, and an imported result file.
 //!
 //! Commands (field `cmd`):
 //! - `estimate {spot}` → tree size and memory, without building
-//! - `create {spot}` → builds the tree and allocates the solver (replaces any previous session)
+//! - `create {spot}` → builds the tree and allocates the solver (replaces the previous solve)
 //! - `step {n}` → runs n iterations
 //! - `report` → iteration count, EVs and exploitability
-//! - `view {path, ev}` → the node at the end of `path` (see `query::walk`)
-//! - `destroy` → frees the session
+//! - `view {path, ev, source}` → the node at the end of `path` in the solve (default) or the
+//!   imported file (`source: "import"`), see `query::walk`
+//! - `destroy` → frees the solve
 
-use hexas_core::cards::{Card, parse_cards};
+use hexas_core::cards::Card;
+use hexas_core::export::Imported;
 use hexas_core::game::{Action, Game};
-use hexas_core::holdem::{BetSizes, Rake, Spot, TreeConfig, build, estimate};
-use hexas_core::query::{Kind, Step, View, hand_ev, walk};
-use hexas_core::range::Range;
+use hexas_core::holdem::{build, estimate};
+use hexas_core::query::{Kind, Step, Strategies, View, hand_ev, to_real, walk};
 use hexas_core::solver::{DcfrParams, Solver};
+use hexas_core::spec::SpotSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 
-#[derive(Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct SizesIn {
-    /// Pot fractions, e.g. [0.33, 0.66].
-    pub bets: Vec<f64>,
-    pub raise_mult: f64,
-    pub max_raises: usize,
-}
-
-#[derive(Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct SpotIn {
-    pub board: String,
-    pub oop: String,
-    pub ip: String,
-    pub pot: f64,
-    pub stack: f64,
-    /// Flop, turn, river. Omitted: the PRD preset for the board.
-    pub sizes: Option<[SizesIn; 3]>,
-    pub donk: Option<bool>,
-    pub rake_pct: Option<f64>,
-    pub rake_cap: Option<f64>,
-    pub allin_threshold: Option<f64>,
-    pub isomorphism: Option<bool>,
-}
-
-impl SpotIn {
-    pub fn to_spot(&self) -> Result<Spot, String> {
-        let board = parse_cards(&self.board).map_err(|e| e.to_string())?;
-        let mut cfg = TreeConfig::preset(self.pot, self.stack, board.len());
-        if let Some(s) = &self.sizes {
-            cfg.sizes = s.clone().map(|x| BetSizes {
-                bets: x.bets,
-                raise_mult: x.raise_mult,
-                max_raises: x.max_raises,
-                bet_allin: false,
-            });
-        }
-        if let Some(d) = self.donk {
-            cfg.oop_flop_bets = d;
-        }
-        cfg.rake = Rake {
-            pct: self.rake_pct.unwrap_or(cfg.rake.pct),
-            cap: self.rake_cap.unwrap_or(cfg.rake.cap),
-        };
-        if let Some(t) = self.allin_threshold {
-            cfg.allin_threshold = t;
-        }
-        if let Some(i) = self.isomorphism {
-            cfg.isomorphism = i;
-        }
-        let parse = |s: &str| s.parse::<Range>().map_err(|e| e.to_string());
-        Ok(Spot {
-            board,
-            ranges: [parse(&self.oop)?, parse(&self.ip)?],
-            config: cfg,
-        })
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase")]
 enum Request {
-    Estimate { spot: SpotIn },
-    Create { spot: SpotIn },
-    Step { n: u32 },
+    Estimate {
+        spot: SpotSpec,
+    },
+    Create {
+        spot: SpotSpec,
+    },
+    Step {
+        n: u32,
+    },
     Report,
-    View { path: Vec<StepIn>, ev: Option<bool> },
+    View {
+        path: Vec<StepIn>,
+        ev: Option<bool>,
+        source: Option<String>,
+    },
     Destroy,
 }
 
@@ -121,6 +76,7 @@ impl Drop for Session {
 
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    static IMPORT: RefCell<Option<Imported>> = const { RefCell::new(None) };
     static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -162,8 +118,8 @@ fn to_steps(path: &[StepIn]) -> Result<Vec<Step>, String> {
         .collect()
 }
 
-fn view_json(solver: &Solver, v: &View, with_ev: bool) -> Value {
-    let game = solver.game();
+/// `ev`: per-hand EVs for both players, when available.
+fn view_json(game: &Game, v: &View, ev: Option<[Vec<f64>; 2]>) -> Value {
     let (kind, player, actions) = match &v.kind {
         Kind::Action { player, actions } => (
             "action",
@@ -173,11 +129,6 @@ fn view_json(solver: &Solver, v: &View, with_ev: bool) -> Value {
         Kind::Chance => ("chance", None, vec![]),
         Kind::Fold { folder } => ("fold", Some(*folder), vec![]),
         Kind::Showdown => ("showdown", None, vec![]),
-    };
-    let ev = if with_ev && kind != "chance" {
-        Some([0, 1].map(|p| hand_ev(solver, v, p)))
-    } else {
-        None
     };
     let hands = [0, 1].map(|p| {
         game.hands[p]
@@ -206,7 +157,7 @@ fn view_json(solver: &Solver, v: &View, with_ev: bool) -> Value {
     })
 }
 
-/// Runs one JSON request against the session and returns the JSON reply.
+/// Runs one JSON request and returns the JSON reply.
 pub fn handle(req: &str) -> Result<Value, String> {
     let req: Request = serde_json::from_str(req).map_err(|e| format!("bad request: {e}"))?;
     match req {
@@ -249,15 +200,46 @@ pub fn handle(req: &str) -> Result<Value, String> {
                 "exploitabilityPct": r.exploitability_pct,
             }))
         }),
-        Request::View { path, ev } => with_session(|s| {
-            let v = walk(&s.solver, &to_steps(&path)?)?;
-            Ok(view_json(&s.solver, &v, ev.unwrap_or(false)))
-        }),
+        Request::View { path, ev, source } => {
+            let steps = to_steps(&path)?;
+            if source.as_deref() == Some("import") {
+                IMPORT.with(|i| {
+                    let i = i.borrow();
+                    let imp = i.as_ref().ok_or("no result file loaded")?;
+                    let v = walk(imp, &steps)?;
+                    // EVs are stored for root-street nodes only.
+                    let ev = imp.loaded.evs.get(&v.node).map(|e| {
+                        [0, 1].map(|p| {
+                            let x: Vec<f64> = e[p].iter().map(|&y| y as f64).collect();
+                            to_real(&imp.game, &v, p, &x)
+                        })
+                    });
+                    Ok(view_json(imp.game(), &v, ev))
+                })
+            } else {
+                with_session(|s| {
+                    let v = walk(&*s.solver, &steps)?;
+                    let ev = (ev.unwrap_or(false) && v.kind != Kind::Chance)
+                        .then(|| [0, 1].map(|p| hand_ev(&s.solver, &v, p)));
+                    Ok(view_json(s.solver.game(), &v, ev))
+                })
+            }
+        }
         Request::Destroy => {
             SESSION.with(|s| s.borrow_mut().take());
             Ok(json!({}))
         }
     }
+}
+
+/// Loads a result file into the import session and returns its header.
+pub fn load(bytes: &[u8]) -> Result<Value, String> {
+    IMPORT.with(|i| i.borrow_mut().take());
+    let imp = Imported::new(bytes)?;
+    let header = serde_json::to_value(&imp.loaded.header).map_err(|e| e.to_string())?;
+    let stored = imp.loaded.strategies.len();
+    IMPORT.with(|i| *i.borrow_mut() = Some(imp));
+    Ok(json!({ "header": header, "storedNodes": stored }))
 }
 
 fn with_session(f: impl FnOnce(&mut Session) -> Result<Value, String>) -> Result<Value, String> {
@@ -287,6 +269,15 @@ pub unsafe extern "C" fn hx_free(ptr: *mut u8, len: usize) {
     drop(unsafe { Vec::from_raw_parts(ptr, 0, len) });
 }
 
+fn reply(r: Result<Value, String>) -> u32 {
+    let (code, v) = match r {
+        Ok(v) => (0, v),
+        Err(e) => (1, json!({ "error": e })),
+    };
+    OUT.with(|o| *o.borrow_mut() = v.to_string().into_bytes());
+    code
+}
+
 /// Handles the JSON request in `[ptr, ptr + len)`; the reply is at `hx_out_ptr` / `hx_out_len`.
 ///
 /// # Safety
@@ -294,15 +285,20 @@ pub unsafe extern "C" fn hx_free(ptr: *mut u8, len: usize) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hx_call(ptr: *const u8, len: usize) -> u32 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let (code, reply) = match std::str::from_utf8(bytes)
-        .map_err(|e| e.to_string())
-        .and_then(handle)
-    {
-        Ok(v) => (0, v),
-        Err(e) => (1, json!({ "error": e })),
-    };
-    OUT.with(|o| *o.borrow_mut() = reply.to_string().into_bytes());
-    code
+    reply(
+        std::str::from_utf8(bytes)
+            .map_err(|e| e.to_string())
+            .and_then(handle),
+    )
+}
+
+/// Loads the result file in `[ptr, ptr + len)`; the reply is at `hx_out_ptr` / `hx_out_len`.
+///
+/// # Safety
+/// `ptr` must point to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hx_load(ptr: *const u8, len: usize) -> u32 {
+    reply(load(unsafe { std::slice::from_raw_parts(ptr, len) }))
 }
 
 #[unsafe(no_mangle)]
