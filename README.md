@@ -36,6 +36,15 @@ cargo build --release
 
 **翻前**：網頁上的「翻前 Preflop」分頁可以直接求解，約 5 秒。點到某條線的「看翻牌」終點，按「帶入翻後求解」，雙方範圍和底池會自動填進翻後頁面。CLI 用 `hexas preflop --iters 300`。翻前結果是近似解，限制見 PRD §4.2 和 §9.1。
 
+**解庫（連續瀏覽）**：三條線（BTN vs BB SRP、BB 3bet BTN、BTN 3bet CO）事先解好全部 1,755 個代表翻牌。
+```
+.\target\release\hexas.exe library --line srp-btn-bb --hours 12            # 中斷後重跑會接續
+.\target\release\hexas.exe library --line 3bp-bb-btn --hours 12 --threads 8
+```
+- 結果寫在 `library/<線>/`（不進 git），進度看 `index.csv`。
+- `npm run dev` 時，網頁會從 `library/` 讀檔。在翻前頁面點到這三條線的「看翻牌」終點，輸入任意翻牌就能看到翻牌策略；轉牌和河牌用當下的範圍在瀏覽器重解（轉牌約 10 秒）。
+- realization 表由 `hexas calibrate` 產生後寫死在程式碼裡；改了以後，解庫要整條重跑。
+
 ## 開發
 ```
 cargo test --workspace                                            # Rust 測試
