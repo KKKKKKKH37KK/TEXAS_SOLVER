@@ -34,6 +34,8 @@ cargo build --release
   - 加注一律是 3× 對方下注，另外加 all-in。可以用 `--bets`、`--turn-bets`、`--river-bets`、`--max-raises`、`--donk` 覆寫。
 - `hexas --help` 列出全部參數。
 
+**翻前**：網頁上的「翻前 Preflop」分頁可以直接求解，約 5 秒。點到某條線的「看翻牌」終點，按「帶入翻後求解」，雙方範圍和底池會自動填進翻後頁面。CLI 用 `hexas preflop --iters 300`。翻前結果是近似解，限制見 PRD §4.2 和 §9.1。
+
 ## 開發
 ```
 cargo test --workspace                                            # Rust 測試

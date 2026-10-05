@@ -210,6 +210,19 @@ hexas-solver/
   - **瀏覽器暫時單執行緒**：rayon 在 wasm32 上會自動退回單執行緒。M5 要開多執行緒時，需要 wasm-bindgen-rayon 或自己寫 worker pool，這會牽涉到安裝 MinGW 或 MSVC（需要使用者同意）。
   - **結果檔 `.hxs`**：存翻牌和轉牌的平均策略（u8 量化）以及翻牌節點每手牌的 EV。河牌不存，網頁走到河牌時用該節點的雙方 reach 當權重，在瀏覽器重解那個河牌子局。重解屬於 unsafe subgame solving，結果和整棵樹一起解的不會完全相同。
   - **SIMD**：WASM 開啟 simd128，比沒開快約 8%。
+- **M4**：核心完成。
+  - 已完成：169 類別、169×169 all-in equity 表、§3.2 的翻前樹、六人向量 CFR、網頁翻前頁面。
+  - **equity 表**：Monte Carlo，每對類別 50 萬次抽樣、固定種子，誤差約 ±0.07%。存在 `crates/core/data/preflop_equity.bin`，用 `hexas gen-equity` 重新產生。
+  - **收斂**：623 個節點，300 iter 時每位玩家的 best-response 增益 < 0.01 bb/100。native 約 3 秒，瀏覽器約 5 秒。
+  - **100bb、rake 5%/3bb 的 RFI**：UTG 15.3%、HJ 20.3%、CO 26.5%、BTN 37.6%、SB 39.2%。
+  - **已知偏差**：realization 模型只看原始 equity，低估同花連張這類「equity 不高但打得好」的牌，所以 BTN 範圍裡幾乎沒有 54s、65s。R_IP=1.0、R_OOP=0.85 是佔位值，等 M6 校正。
+  - **§8.6 尚未完成**：HU push/fold 和公開 Nash 表的比對還沒做。目前的測試只驗證 RFI 隨位置單調變寬、AA 一定 open、72o 一定棄牌、best-response 增益很小。
+- **M5**：部分完成。
+  - 已完成：翻前樹的「看翻牌」終點可以一鍵把雙方範圍（帶權重）、底池和籌碼帶進翻後頁面。
+  - 未完成：
+    - GitHub Pages 部署：目前 repo 是 private，免費方案不能用 Pages。
+    - coi-serviceworker 和瀏覽器多執行緒：需要先決定工具鏈，見 M3 的說明。
+    - IndexedDB 存檔。
 
 ## 10. 風險
 - **記憶體**：§3.3 的尺寸可能超過 4GB（見 §5），M2 是決策點。
