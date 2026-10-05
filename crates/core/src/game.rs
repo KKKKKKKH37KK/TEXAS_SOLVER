@@ -72,6 +72,8 @@ pub struct Game {
     pub weights: [Vec<f32>; 2],
     /// Hand strength per showdown board, per player, per hand. Larger wins.
     pub strengths: Vec<[Vec<u32>; 2]>,
+    /// Card mask of each showdown board (parallel to `strengths`); hands touching it are skipped.
+    pub board_masks: Vec<u64>,
     /// Pot at the root, for reporting results as a share of the pot.
     pub start_pot: f64,
 }
@@ -107,6 +109,7 @@ impl Game {
 
     /// Structural checks; panics with a message on the first problem.
     pub fn validate(&self) {
+        assert_eq!(self.strengths.len(), self.board_masks.len());
         assert_eq!(self.hands[0].len(), self.weights[0].len());
         assert_eq!(self.hands[1].len(), self.weights[1].len());
         for (i, n) in self.nodes.iter().enumerate() {

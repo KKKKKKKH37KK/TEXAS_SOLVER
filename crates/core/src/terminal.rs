@@ -9,13 +9,21 @@ use crate::game::Game;
 
 const NONE: u8 = u8::MAX;
 
+/// A hand in strength order, with what the sweep needs stored inline.
+#[derive(Clone, Copy)]
+struct Entry {
+    strength: u32,
+    idx: u32,
+    cards: [u8; 2],
+}
+
 pub struct Terminals {
     /// Private cards per player per hand (second card NONE for one-card games).
     cards: [Vec<[u8; 2]>; 2],
     /// Index of the opponent hand with the same two cards, or u32::MAX.
     same: [Vec<u32>; 2],
-    /// Per board, per player: hand indices sorted by ascending strength.
-    order: Vec<[Vec<u32>; 2]>,
+    /// Per board, per player: hands that do not touch the board, by ascending strength.
+    sorted: Vec<[Vec<Entry>; 2]>,
 }
 
 fn cards_of(mask: u64) -> [u8; 2] {
@@ -58,18 +66,32 @@ impl Terminals {
                 })
                 .collect()
         });
-        let order = game
+        // Hands that share a card with the board never reach its showdowns (zero reach), so they
+        // are left out of the sweeps.
+        let sorted = game
             .strengths
             .iter()
-            .map(|s| {
+            .zip(&game.board_masks)
+            .map(|(s, &board)| {
                 [0, 1].map(|p| {
-                    let mut idx: Vec<u32> = (0..game.hands[p].len() as u32).collect();
-                    idx.sort_by_key(|&i| s[p][i as usize]);
-                    idx
+                    let mut v: Vec<Entry> = (0..game.hands[p].len())
+                        .filter(|&h| game.hands[p][h] & board == 0)
+                        .map(|h| Entry {
+                            strength: s[p][h],
+                            idx: h as u32,
+                            cards: cards[p][h],
+                        })
+                        .collect();
+                    v.sort_by_key(|e| e.strength);
+                    v
                 })
             })
             .collect();
-        Terminals { cards, same, order }
+        Terminals {
+            cards,
+            same,
+            sorted,
+        }
     }
 
     fn removal(&self, p: usize, h: usize, card_sum: &[f64; 64], reach_o: &[f32]) -> f64 {
@@ -113,74 +135,83 @@ impl Terminals {
 
     /// Every traverser hand gets `payoff` × compatible opponent reach.
     pub fn fold(&self, p: usize, reach_o: &[f32], payoff: f64) -> Vec<f32> {
-        self.compatible(p, reach_o)
-            .into_iter()
-            .map(|x| (x * payoff) as f32)
+        let (total, cs) = self.card_sums(1 - p, reach_o);
+        (0..self.cards[p].len())
+            .map(|h| ((total - self.removal(p, h, &cs, reach_o)) * payoff) as f32)
             .collect()
     }
 
     /// Showdown values with the given payoffs for a win, a loss and a tie.
+    ///
+    /// cfv = win·u_w + loss·u_l + tie·u_t with tie = compat − win − loss, written as
+    /// win·(u_w − u_t) + loss·(u_l − u_t) + compat·u_t so each sweep adds its part directly.
     pub fn showdown(
         &self,
         p: usize,
         board: usize,
-        strengths: &[Vec<u32>; 2],
         reach_o: &[f32],
         [win, lose, tie]: [f64; 3],
     ) -> Vec<f32> {
-        let o = 1 - p;
-        let (sp, so) = (&strengths[p], &strengths[o]);
-        let (op, oo) = (&self.order[board][p], &self.order[board][o]);
-        let n = op.len();
-        let compat = self.compatible(p, reach_o);
-        let mut wins = vec![0.0f64; n];
-        let mut losses = vec![0.0f64; n];
+        let [sp, so] = if p == 0 {
+            [&self.sorted[board][0], &self.sorted[board][1]]
+        } else {
+            [&self.sorted[board][1], &self.sorted[board][0]]
+        };
+        let mut out = vec![0.0f32; self.cards[p].len()];
+        let pair = |cs: &[f64; 64], [a, b]: [u8; 2]| {
+            cs[a as usize] + if b != NONE { cs[b as usize] } else { 0.0 }
+        };
+        let add = |cs: &mut [f64; 64], [a, b]: [u8; 2], r: f64| {
+            cs[a as usize] += r;
+            if b != NONE {
+                cs[b as usize] += r;
+            }
+        };
 
-        // Ascending: accumulate opponent hands strictly weaker than the current traverser hand.
+        // Totals over every opponent hand that can reach this board.
+        let (mut total, mut cs_all) = (0.0f64, [0.0f64; 64]);
+        for e in so {
+            let r = reach_o[e.idx as usize] as f64;
+            total += r;
+            add(&mut cs_all, e.cards, r);
+        }
+        if total == 0.0 {
+            return out;
+        }
+        let same = &self.same[p];
+
+        // Ascending: opponent hands strictly weaker than the traverser hand. An identical opponent
+        // hand has equal strength, so it never enters these sums.
         let (mut cum, mut cs, mut j) = (0.0f64, [0.0f64; 64], 0);
-        for &h in op {
-            let h = h as usize;
-            while j < oo.len() && so[oo[j] as usize] < sp[h] {
-                let k = oo[j] as usize;
-                let r = reach_o[k] as f64;
+        for e in sp {
+            while j < so.len() && so[j].strength < e.strength {
+                let r = reach_o[so[j].idx as usize] as f64;
                 cum += r;
-                for c in self.cards[o][k] {
-                    if c != NONE {
-                        cs[c as usize] += r;
-                    }
-                }
+                add(&mut cs, so[j].cards, r);
                 j += 1;
             }
-            // An identical opponent hand has equal strength, so it is never in these sums.
-            let [a, b] = self.cards[p][h];
-            wins[h] = cum - cs[a as usize] - if b != NONE { cs[b as usize] } else { 0.0 };
+            let h = e.idx as usize;
+            let mut compat = total - pair(&cs_all, e.cards);
+            if same[h] != u32::MAX {
+                compat += reach_o[same[h] as usize] as f64;
+            }
+            let wins = cum - pair(&cs, e.cards);
+            out[h] = (wins * (win - tie) + compat * tie) as f32;
         }
 
         // Descending: opponent hands strictly stronger.
-        let (mut cum, mut cs, mut j) = (0.0f64, [0.0f64; 64], oo.len());
-        for &h in op.iter().rev() {
-            let h = h as usize;
-            while j > 0 && so[oo[j - 1] as usize] > sp[h] {
-                let k = oo[j - 1] as usize;
-                let r = reach_o[k] as f64;
+        let (mut cum, mut cs, mut j) = (0.0f64, [0.0f64; 64], so.len());
+        for e in sp.iter().rev() {
+            while j > 0 && so[j - 1].strength > e.strength {
+                let r = reach_o[so[j - 1].idx as usize] as f64;
                 cum += r;
-                for c in self.cards[o][k] {
-                    if c != NONE {
-                        cs[c as usize] += r;
-                    }
-                }
+                add(&mut cs, so[j - 1].cards, r);
                 j -= 1;
             }
-            let [a, b] = self.cards[p][h];
-            losses[h] = cum - cs[a as usize] - if b != NONE { cs[b as usize] } else { 0.0 };
+            let losses = cum - pair(&cs, e.cards);
+            out[e.idx as usize] += (losses * (lose - tie)) as f32;
         }
-
-        (0..n)
-            .map(|h| {
-                let ties = compat[h] - wins[h] - losses[h];
-                (wins[h] * win + losses[h] * lose + ties * tie) as f32
-            })
-            .collect()
+        out
     }
 }
 
@@ -244,6 +275,7 @@ mod tests {
             weights: [vec![1.0; masks[0].len()], vec![1.0; masks[1].len()]],
             hands: masks,
             strengths: vec![strengths],
+            board_masks: vec![dead],
             start_pot: 1.0,
         };
         (game, reach)
@@ -257,7 +289,7 @@ mod tests {
             for p in 0..2 {
                 let o = 1 - p;
                 let payoffs = [3.0, -2.0, 0.5];
-                let fast_sd = t.showdown(p, 0, &game.strengths[0], &reach[o], payoffs);
+                let fast_sd = t.showdown(p, 0, &reach[o], payoffs);
                 let fast_fold = t.fold(p, &reach[o], -1.5);
                 for h in 0..game.hands[p].len() {
                     let (mut sd, mut fold) = (0.0f64, 0.0f64);

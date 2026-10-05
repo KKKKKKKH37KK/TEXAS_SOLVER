@@ -237,8 +237,7 @@ impl<'g> Solver<'g> {
             } => {
                 let net = pot - rake;
                 let payoffs = [net - contrib[p], -contrib[p], net / 2.0 - contrib[p]];
-                self.terms
-                    .showdown(p, board, &self.game.strengths[board], reach_o, payoffs)
+                self.terms.showdown(p, board, reach_o, payoffs)
             }
             _ => unreachable!(),
         }

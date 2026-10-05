@@ -130,7 +130,7 @@ impl Limit {
     }
 }
 
-fn build(mut g: Limit, n_cards: u8, strengths: Vec<[Vec<u32>; 2]>) -> Game {
+fn build(mut g: Limit, n_cards: u8, strengths: Vec<[Vec<u32>; 2]>, board_masks: Vec<u64>) -> Game {
     let start = State {
         round: 0,
         bets: 0,
@@ -145,6 +145,7 @@ fn build(mut g: Limit, n_cards: u8, strengths: Vec<[Vec<u32>; 2]>) -> Game {
         weights: [vec![1.0; hands.len()], vec![1.0; hands.len()]],
         hands: [hands.clone(), hands],
         strengths,
+        board_masks,
         start_pot: 2.0 * g.ante,
     };
     game.validate();
@@ -161,7 +162,7 @@ pub fn kuhn() -> Game {
         nodes: vec![],
     };
     let s: Vec<u32> = vec![0, 1, 2];
-    build(g, 3, vec![[s.clone(), s]])
+    build(g, 3, vec![[s.clone(), s]], vec![0])
 }
 
 pub fn leduc() -> Game {
@@ -188,5 +189,6 @@ pub fn leduc() -> Game {
             [s.clone(), s]
         })
         .collect();
-    build(g, 6, strengths)
+    // Board index = the public card.
+    build(g, 6, strengths, (0..6).map(|c| 1u64 << c).collect())
 }

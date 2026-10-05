@@ -549,6 +549,7 @@ pub fn build(spot: &Spot) -> Result<Game, String> {
         hands,
         weights,
         strengths,
+        board_masks: b.board_list,
         start_pot: spot.config.start_pot,
     };
     game.validate();
