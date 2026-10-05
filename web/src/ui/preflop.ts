@@ -13,6 +13,21 @@ export function preflopActionInfo(labels: string[]): ActionInfo[] {
   });
 }
 
+/**
+ * Range text for a position at a node, e.g. "AA,AKs:0.62,KQo:0.1": each class's weight is the share
+ * of its combos still in the range. Classes below 0.1 % are dropped.
+ */
+export function rangeText(view: PreflopView, position: number): string {
+  return view.classes
+    .map((name, i) => {
+      const w = Math.min(1, view.reach[position][i] / COMBOS(name));
+      if (w < 0.001) return null;
+      return w > 0.999 ? name : `${name}:${w.toFixed(3)}`;
+    })
+    .filter((x): x is string => x !== null)
+    .join(',');
+}
+
 /** Aggregate for `player`'s range; action frequencies only for the player to act. */
 export function preflopAggregate(view: PreflopView, player: number): Aggregate {
   const acting = view.kind === 'action' && view.player === player && view.strategy !== null;

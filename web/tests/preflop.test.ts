@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PreflopView } from '../src/solver/protocol';
-import { preflopActionInfo, preflopAggregate } from '../src/ui/preflop';
+import { preflopActionInfo, preflopAggregate, rangeText } from '../src/ui/preflop';
 
 describe('preflop view helpers', () => {
   it('parses action labels', () => {
@@ -31,5 +31,13 @@ describe('preflop view helpers', () => {
     // Open frequency weighted by combos: (6 * 1 + 12 * 0.5) / 18.
     expect(g.total[1]).toBeCloseTo(12 / 18);
     expect(preflopAggregate(view, 1).total).toEqual([]);
+  });
+
+  it('writes a range as weighted classes', () => {
+    const view = {
+      classes: ['AA', 'AKs', '72o'],
+      reach: [[6, 2, 0.0001]],
+    } as unknown as PreflopView;
+    expect(rangeText(view, 0)).toBe('AA,AKs:0.500');
   });
 });

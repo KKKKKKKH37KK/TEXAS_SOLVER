@@ -2,17 +2,27 @@ import { useMemo, useState } from 'react';
 import type { SolverClient } from '../solver/client';
 import type { PreflopConfigIn, PreflopReport, PreflopView } from '../solver/protocol';
 import { actionColors, pct } from './grid';
-import { preflopActionInfo, preflopAggregate } from './preflop';
+import { preflopActionInfo, preflopAggregate, rangeText } from './preflop';
 import { RangeGrid } from './RangeGrid';
+
+/** Ranges and pot of a heads-up flop, handed to the postflop page. */
+export interface Handoff {
+  oop: string;
+  ip: string;
+  pot: number;
+  stack: number;
+  label: string;
+}
 
 interface Props {
   client: SolverClient;
+  onPostflop: (h: Handoff) => void;
 }
 
 const yieldToUi = () => new Promise((r) => setTimeout(r, 0));
 
 /** 6-max preflop solve and range browser (PRD M4). */
-export function PreflopPanel({ client }: Props) {
+export function PreflopPanel({ client, onPostflop }: Props) {
   const [config, setConfig] = useState<Required<PreflopConfigIn>>({
     stack: 100,
     rakePct: 5,
@@ -141,6 +151,25 @@ export function PreflopPanel({ client }: Props) {
           </nav>
           <div className="nodehead">
             {view.kind === 'action' ? <b>{pos[acting!]} 行動</b> : <b>{outcome(view)}</b>}
+            {view.kind === 'flop' && (
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  const [oop, ip] = view.players;
+                  const contrib = view.contrib!;
+                  onPostflop({
+                    oop: rangeText(view, oop),
+                    ip: rangeText(view, ip),
+                    pot: Number(contrib.reduce((a, b) => a + b, 0).toFixed(2)),
+                    stack: Number((config.stack - contrib[oop]).toFixed(2)),
+                    label: `${pos[oop]} vs ${pos[ip]}：${path.map((p) => p.label).join(' › ')}`,
+                  });
+                }}
+              >
+                帶入翻後求解
+              </button>
+            )}
           </div>
           {view.kind === 'action' && (
             <div className="actionbar">

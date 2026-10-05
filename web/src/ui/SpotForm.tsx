@@ -14,6 +14,8 @@ export interface SolveSettings {
 
 interface Props {
   busy: boolean;
+  /** Ranges and pot from the preflop page; applied whenever `id` changes. */
+  incoming?: { oop: string; ip: string; pot: number; stack: number; label: string; id: number } | null;
   onEstimate: (spot: SpotIn) => void;
   onSolve: (spot: SpotIn, s: SolveSettings) => void;
   onError: (msg: string) => void;
@@ -21,7 +23,7 @@ interface Props {
 
 const STREETS = ['翻牌 Flop', '轉牌 Turn', '河牌 River'];
 
-export function SpotForm({ busy, onEstimate, onSolve, onError }: Props) {
+export function SpotForm({ busy, incoming, onEstimate, onSolve, onError }: Props) {
   const [board, setBoard] = useState('Ks7d2c5h');
   const [oop, setOop] = useState(DEFAULT_OOP);
   const [ip, setIp] = useState(DEFAULT_IP);
@@ -32,6 +34,17 @@ export function SpotForm({ busy, onEstimate, onSolve, onError }: Props) {
   const [rakeCap, setRakeCap] = useState(3);
   const [targetPct, setTargetPct] = useState(0.5);
   const [maxIter, setMaxIter] = useState(500);
+
+  // Take over ranges and pot handed over from the preflop page (once per hand-over).
+  const [appliedId, setAppliedId] = useState<number | null>(null);
+  if (incoming && incoming.id !== appliedId) {
+    setAppliedId(incoming.id);
+    setOop(incoming.oop);
+    setIp(incoming.ip);
+    setPot(incoming.pot);
+    setStack(incoming.stack);
+    if (boardLen(board) !== 3) setBoard('');
+  }
 
   const n = boardLen(board);
   const firstStreet = Math.max(0, n - 3);

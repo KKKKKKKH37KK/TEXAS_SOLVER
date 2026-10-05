@@ -3,7 +3,7 @@ import { SolverClient } from './solver/client';
 import type { Estimate, NodeView, Report, ResultHeader, Source, SpotIn } from './solver/protocol';
 import { toComboWeights } from './ui/cards';
 import { NodeBrowser, type PathItem } from './ui/NodeBrowser';
-import { PreflopPanel } from './ui/PreflopPanel';
+import { type Handoff, PreflopPanel } from './ui/PreflopPanel';
 import { SpotForm, type SolveSettings } from './ui/SpotForm';
 
 /** Browser memory budget for one solve (PRD §5): wasm32 tops out at 4 GB. */
@@ -35,6 +35,7 @@ export function App() {
   const [header, setHeader] = useState<ResultHeader | null>(null);
   const [subgame, setSubgame] = useState<string | null>(null);
   const [page, setPage] = useState<'postflop' | 'preflop'>('postflop');
+  const [incoming, setIncoming] = useState<(Handoff & { id: number }) | null>(null);
 
   const run = useCallback(async <T,>(f: () => Promise<T>): Promise<T | null> => {
     setError(null);
@@ -127,22 +128,25 @@ export function App() {
     </div>
   );
 
-  if (page === 'preflop') {
-    return (
-      <main>
+  return (
+    <main>
+      {/* Both pages stay mounted so switching keeps their results. */}
+      <div hidden={page !== 'preflop'}>
         <header className="top">
           <div className="titlebar">
             <h1>HEXAS Solver</h1>
             {pages}
           </div>
         </header>
-        <PreflopPanel client={client.current} />
-      </main>
-    );
-  }
-
-  return (
-    <main>
+        <PreflopPanel
+          client={client.current}
+          onPostflop={(h) => {
+            setIncoming({ ...h, id: Date.now() });
+            setPage('postflop');
+          }}
+        />
+      </div>
+      <div hidden={page !== 'postflop'}>
       <header className="top">
         <div className="titlebar">
           <h1>HEXAS Solver</h1>
@@ -167,7 +171,13 @@ export function App() {
         </p>
       </header>
 
-      <SpotForm busy={busy} onEstimate={onEstimate} onSolve={(spot, s) => solve(spot, s, null)} onError={setError} />
+      <SpotForm
+        busy={busy}
+        incoming={incoming}
+        onEstimate={onEstimate}
+        onSolve={(spot, s) => solve(spot, s, incoming?.label ?? null)}
+        onError={setError}
+      />
 
       {error && <p className="error">{error}</p>}
 
@@ -233,6 +243,7 @@ export function App() {
           onResolve={mode === 'import' ? resolveHere : undefined}
         />
       )}
+      </div>
     </main>
   );
 }
