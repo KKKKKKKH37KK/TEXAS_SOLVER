@@ -12,3 +12,7 @@ data/private/
 
 # Built by web/scripts/build-wasm.mjs
 web/src/wasm/
+
+# Result files written by hexas solve --out
+results/
+*.hxs

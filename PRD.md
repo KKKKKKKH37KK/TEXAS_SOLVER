@@ -176,6 +176,15 @@ hexas-solver/
 7. **效能**（目標值，M2 實測後修正）：
    - 8 執行緒下，河牌 spot < 1 秒、轉牌 spot < 10 秒。
    - 翻牌 SRP 到 0.5% pot 的時間：M2 定出基準。
+   - **2026-10-06 實測**（使用者電腦，16 執行緒，BTN vs BB 100bb SRP 範圍）：
+     - 河牌 spot：< 0.1 秒，達標。
+     - 轉牌 spot（Ks7d2c5h，388MB）：
+       - native 16 執行緒：400 iter 收斂到 0.38% pot，34 秒，未達 10 秒的目標。
+       - 瀏覽器單執行緒：每 iter 約 0.7 秒。
+     - 翻牌 spot：
+       - 小樹（Ks7d2c，33/100、66、66，3.5GB）：0.38% pot，115 秒。
+       - 預設樹（雙色 Ks7s2d，8.9GB）：結果見 `results/` 的 log。
+     - postflop-solver 解到同樣精度約快 2.5 倍（§8.4），主要差在 terminal 的計算。
 
 ## 9. Milestones
 | # | 內容 | 驗收 |
@@ -188,6 +197,18 @@ hexas-solver/
 | M5 | 翻前到翻後的流程、存檔、GitHub Pages 加 coi-serviceworker | 部署後可以多執行緒求解 |
 | M6 | 整合 Stats Viewer；用翻後結果校正 realization 係數 | 從重播一鍵開啟 spot |
 
+### 9.1 進度（2026-10-06）
+- **M0、M1**：完成。
+- **M2**：完成，但有兩項依決定延後。
+  - 已完成：多條街的樹、記憶體估算、花色同構、rayon、§8.4 對照。
+  - 16-bit 壓縮：延後。使用者電腦有 31GB，翻牌預設樹最大約 14.5GB（彩虹翻牌），不壓縮也放得下。
+  - 效能：轉牌 spot 尚未達到 §8.7 的目標，見 §8.7 的實測。
+- **M3**：完成，和原計畫有以下差異。
+  - **沒有用 wasm-bindgen**：它的 CLI 在這台電腦的 GNU toolchain 下編不起來（缺 MinGW 的 dlltool）。改成 JSON 指令加 C ABI，見 `crates/wasm`，只需要 `wasm32-unknown-unknown` target。
+  - **瀏覽器暫時單執行緒**：rayon 在 wasm32 上會自動退回單執行緒。M5 要開多執行緒時，需要 wasm-bindgen-rayon 或自己寫 worker pool，這會牽涉到安裝 MinGW 或 MSVC（需要使用者同意）。
+  - **結果檔 `.hxs`**：存翻牌和轉牌的平均策略（u8 量化）以及翻牌節點每手牌的 EV。河牌不存，網頁走到河牌時用該節點的雙方 reach 當權重，在瀏覽器重解那個河牌子局。重解屬於 unsafe subgame solving，結果和整棵樹一起解的不會完全相同。
+  - **SIMD**：WASM 開啟 simd128，比沒開快約 8%。
+
 ## 10. 風險
 - **記憶體**：§3.3 的尺寸可能超過 4GB（見 §5），M2 是決策點。
 - **翻前的近似**：realization 模型和 HU 強制規則會讓翻前範圍有偏差。UI 要明確標示「近似解」。
@@ -197,5 +218,6 @@ hexas-solver/
 ## 11. 已確認的決定（2026-10-05）
 1. 翻後加注：3× 對方下注，另外加 all-in。
 2. 翻牌 donk：預設**開啟**，可以設定關閉。這會讓翻牌樹變大，計入 §5 的記憶體風險。
+   - 2026-10-06 更新：翻牌 spot 的預設改成不 donk（§5.1）。轉牌和河牌 spot 仍然允許 donk。
 3. 翻前尺寸：open 2.5bb（SB 3bb）、3Bet IP 3× / OOP 4×、4Bet 2.3×、5Bet all-in。
 4. 專案名稱暫定 HEXAS Solver，資料夾為 `HEXAS_SOLVER`。

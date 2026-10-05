@@ -1,21 +1,46 @@
 # HEXAS Solver
 
-6-max NLHE cash game GTO solver（瀏覽器 WASM + native CLI），只做賽後研究。規格見 [PRD.md](PRD.md)。
+6-max NLHE cash game GTO solver（瀏覽器 WASM + native CLI），只做賽後研究，不做牌桌即時輔助。規格見 [PRD.md](PRD.md)。
 
 ## 結構
 ```
-crates/core/   cards, evaluator, tree, CFR（純 Rust）
-crates/cli/    hexas 執行檔（測試與 benchmark）
-web/           Vite + React + TS 前端
+crates/core/   cards, evaluator, game tree, DCFR, isomorphism, query, result files（純 Rust）
+crates/cli/    hexas 執行檔：tree / solve / eval
+crates/wasm/   瀏覽器介面：JSON 指令 + C ABI（不用 wasm-bindgen）
+web/           Vite + React + TS 前端，solver 在 Web Worker 裡跑
 ```
+
+## 怎麼用
+
+**轉牌、河牌**：直接在網頁求解。
+```
+cd web
+npm install
+npm run dev        # 會先編 WASM，再開 http://localhost:5173
+```
+
+**翻牌**：樹通常有數 GB，用本機 CLI 解完再到網頁開啟。
+```
+cargo build --release
+.\target\release\hexas.exe tree  --board Ks7s2d --oop "<BB 範圍>" --ip "<BTN 範圍>" --pot 5.5 --stack 97.5
+.\target\release\hexas.exe solve --board Ks7s2d --oop "<BB 範圍>" --ip "<BTN 範圍>" --pot 5.5 --stack 97.5 `
+    --budget-mb 12000 --target 0.5 --out results\ks7s2d.hxs
+```
+- `tree` 只估算記憶體，不求解。
+- `--out` 寫出的結果檔存了翻牌和轉牌的策略。到網頁按「開啟結果檔」載入；走到河牌時，可以用那個節點的範圍在瀏覽器重解河牌。
+- 樹的預設值依 PRD §3.3：
+  - 翻牌 spot：翻牌 33/66/100/125%、不 donk；轉牌和河牌 66/125%；每條街最多加注 1 次。
+  - 轉牌、河牌 spot：每條街 33/66/100/125%、最多加注 3 次。
+  - 加注一律是 3× 對方下注，另外加 all-in。可以用 `--bets`、`--turn-bets`、`--river-bets`、`--max-raises`、`--donk` 覆寫。
+- `hexas --help` 列出全部參數。
 
 ## 開發
 ```
-cargo test --workspace           # Rust 測試
-cargo test --release -p hexas-core --test evaluator -- --ignored   # 7 張牌窮舉驗證
-cargo run --release -p hexas-cli -- --help
-cargo run --release -p hexas-cli -- river --board Qs9h5d3c2s --oop "AA-22,AKs-A2s,KQo" --ip "TT-22,AQs-A2s,KQo-KJo"
-cd web && npm install && npm run dev
+cargo test --workspace                                            # Rust 測試
+cargo test --release -p hexas-core --test evaluator -- --ignored  # 7 張牌窮舉驗證（約 1 秒）
+cargo clippy --workspace --all-targets -- -D warnings
+cd web && npm test && npm run build
 ```
 
-Windows 上用 `stable-x86_64-pc-windows-gnu` toolchain（不需要 Visual Studio Build Tools）。
+- Windows 上用 `stable-x86_64-pc-windows-gnu` toolchain（不需要 Visual Studio Build Tools）。
+- 和 postflop-solver 的對照程式（PRD §8.4）放在 repo 外，因為對方是 AGPL。
