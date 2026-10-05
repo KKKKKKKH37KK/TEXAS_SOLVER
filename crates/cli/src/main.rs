@@ -454,14 +454,14 @@ fn cmd_preflop(args: &[String]) -> Result<(), String> {
     // Opening (RFI) frequency per position: walk fold-fold-... to each player's first decision.
     println!("\nRFI (open raise) frequency:");
     let mut path = Vec::new();
-    for p in 0..5 {
+    for name in &POSITIONS[..5] {
         let (node, _) = solver.walk(&path)?;
         let s = solver.strategy(node);
         let open: f64 = (0..NUM_CLASSES)
             .map(|h| s[NUM_CLASSES + h] as f64 * combo_count(h) as f64)
             .sum::<f64>()
             / 1326.0;
-        println!("  {:<4} {:5.1}%", POSITIONS[p], open * 100.0);
+        println!("  {name:<4} {:5.1}%", open * 100.0);
         path.push(0); // fold
     }
     Ok(())
