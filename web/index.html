@@ -3,8 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- No external requests: everything runs in the browser. 'wasm-unsafe-eval' is for the solver module (M3). -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' ws: blob:" />
+    <!-- Everything runs in the browser. 'wasm-unsafe-eval' is for the solver module (M3); the only
+         outside requests are downloads of flop-library files from Hugging Face (and its CDN). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' ws: blob: https://huggingface.co https://*.huggingface.co https://*.hf.co" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23243b6b'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif'>♣</text></svg>" />
     <title>HEXAS Solver</title>
   </head>

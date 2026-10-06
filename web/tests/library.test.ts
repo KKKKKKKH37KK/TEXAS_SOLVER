@@ -17,5 +17,7 @@ describe('library lines', () => {
 
   it('builds file URLs', () => {
     expect(libraryUrl('srp-btn-bb', 'KsJsJh')).toBe('./library/srp-btn-bb/KsJsJh.hxs');
+    const hf = 'https://huggingface.co/datasets/u/hexas-library/resolve/main';
+    expect(libraryUrl('3bp-bb-btn', 'AsKh8s', hf)).toBe(`${hf}/3bp-bb-btn/AsKh8s.hxs`);
   });
 });

@@ -106,7 +106,7 @@ export function App() {
       const r = await fetch(libraryUrl(line, c.name));
       if (!r.ok) {
         throw new Error(
-          `解庫裡還沒有這個翻牌（${line} / ${c.name}）。解庫還在建置中，或這個網站沒有附解庫（目前只有本機 npm run dev 會讀 library/）。`,
+          `解庫裡還沒有這個翻牌（${line} / ${c.name}，HTTP ${r.status}）。解庫還在建置或上傳中。`,
         );
       }
       const loaded = await client.current!.load(await r.arrayBuffer());
@@ -134,9 +134,12 @@ export function App() {
       ipWeights: toComboWeights(view.hands[1], view.reach[1]),
       pot: view.pot,
       stack: Math.min(view.stacks[0], view.stacks[1]),
+      // The PRD turn/river preset (33/66/100/125 %, up to 3 raises), finer than the library's
+      // single 66 % size: the browser can afford it for one street.
+      sizes: undefined,
     };
     const path = imported?.path.map((p) => ('c' in p.step ? p.step.c : p.label)).join(' › ') ?? '';
-    void solve(spot, { targetPct: 0.3, maxIter: 2000 }, `子局：${path}`);
+    void solve(spot, { targetPct: 1.0, maxIter: 1000 }, `子局：${path}`);
   };
 
   const busy = status === 'working' || status === 'solving';

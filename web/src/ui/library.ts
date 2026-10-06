@@ -27,7 +27,13 @@ export function libraryLineOf(labels: string[]): LibraryLine | null {
   return LIBRARY_LINES.find((l) => l.actions.length === words.length && l.actions.every((a, i) => words[i] === a)) ?? null;
 }
 
-/** URL of a library flop file, relative to the page. */
-export function libraryUrl(line: string, canonical: string): string {
-  return `./library/${line}/${canonical}.hxs`;
+/**
+ * Where library files live: `VITE_LIBRARY_URL` at build time (the Hugging Face dataset for the
+ * published site), else `./library/`, which `vite dev` / `vite preview` serve from the repo.
+ */
+export const LIBRARY_BASE: string = (import.meta.env.VITE_LIBRARY_URL as string | undefined) || './library/';
+
+/** URL of a library flop file. */
+export function libraryUrl(line: string, canonical: string, base = LIBRARY_BASE): string {
+  return `${base.endsWith('/') ? base : base + '/'}${line}/${canonical}.hxs`;
 }

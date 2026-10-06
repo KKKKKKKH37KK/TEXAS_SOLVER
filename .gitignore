@@ -19,3 +19,6 @@ results/
 
 # Flop library built by hexas library
 library/
+
+# Hugging Face upload tool dependencies
+tools/hf-upload/node_modules/
